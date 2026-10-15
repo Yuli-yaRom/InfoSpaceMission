@@ -3,7 +3,7 @@ from domain.dtos import RecommendationDTO
 
 
 # Адаптер для виконання Cypher-запитів до графової бази даних Neo4j
-class Neo4jGraphAdapter(GraphQueryPort):
+class Neo4jReadOnlyAdapter(GraphQueryPort):
     def __init__(self, uri: str = "bolt://localhost:7687", auth: tuple[str, str] = ("neo4j", "password")):
         self.uri = uri
         self.auth = auth

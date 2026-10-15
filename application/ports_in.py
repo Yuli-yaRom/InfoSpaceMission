@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
-from domain.dtos import BatchIngestRequest, BatchIngestResponse, RecommendationDTO
-
+from domain.dtos import RecommendationDTO, IngestMissionItemDTO
 
 # Контракт на отримання списку схожих рекомендованих місій
 class GetRecommendationsUseCase(ABC):
@@ -8,8 +7,8 @@ class GetRecommendationsUseCase(ABC):
     def recommend(self, mission_id: str, limit: int = 5) -> list[RecommendationDTO]:
         pass
 
-# Контракт на прийом і завантаження пачки місій від генератора
-class BatchIngestUseCase(ABC):
+# Єдиний вхідний порт для створення місій відповідно до схеми Command (Рис. 3.1)
+class CreateMissionUseCase(ABC):
     @abstractmethod
-    def ingest(self, request: BatchIngestRequest) -> BatchIngestResponse:
+    def execute(self, command: IngestMissionItemDTO):
         pass
