@@ -8,7 +8,8 @@ class IngestMissionItemDTO(BaseModel):
     agency_id: str
     celestial_body_id: str
     mission_type: str
-    description: str
+    description: str  # довгий текст -> Elasticsearch
+    source_url: str  # посилання на джерело факту -> SQL
 
 # Запит із пачкою згенерованих місій для масового завантаження
 class BatchIngestRequest(BaseModel):
