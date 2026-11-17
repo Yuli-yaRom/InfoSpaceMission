@@ -1,0 +1,79 @@
+services:
+  # 1. Основне сховище (MongoDB)
+  mongodb:
+    image: mongo:7
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: space
+      MONGO_INITDB_ROOT_PASSWORD: space
+      MONGO_INITDB_DATABASE: space
+    volumes:
+      - mongodata:/data/db
+    ports:
+      - "27017:27017"
+
+  # 2. Пошуковий рушій (Elasticsearch)
+  elasticsearch:
+    image: elasticsearch:8.11.1
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+
+  # 3. Графова БД (Neo4j)
+  neo4j:
+    image: neo4j:5
+    environment:
+      - NEO4J_AUTH=neo4j/space_password
+    volumes:
+      - neo4jdata:/data
+    ports:
+      - "7474:7474" # Порт для веб-інтерфейсу (браузера Neo4j)
+      - "7687:7687" # Bolt-протокол для підключення додатку
+
+  # 4. In-memory Кеш (Redis)
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+
+  # 5. Головний додаток
+  app:
+    build: .
+    depends_on:
+      - mongodb
+      - elasticsearch
+      - neo4j
+      - redis
+    environment:
+      # Змінні для підключення до MongoDB
+      MONGO_HOST: mongodb          
+      MONGO_DB: space
+      MONGO_USER: space
+      MONGO_PASSWORD: space
+      
+      # Змінні для підключення до Elasticsearch
+      ES_HOST: elasticsearch
+      ES_PORT: 9200
+      
+      # Змінні для підключення до Neo4j
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: space_password
+      
+      # Змінні для підключення до Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    volumes:
+      - ./logs:/app/logs  
+
+volumes:
+  mongodata:
+  esdata:
+  neo4jdata:
+  redisdata:
