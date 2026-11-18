@@ -40,6 +40,29 @@
   .placeholder { color:var(--muted); text-align:center; padding:40px 0; }
   dl { display:grid; grid-template-columns:max-content 1fr; gap:4px 14px; margin:0; }
   dt { color:var(--muted); } dd { margin:0; }
+  /* ---- Пошук (п. 15) ---- */
+  .search-layout { display:grid; grid-template-columns:minmax(0,1fr) 280px; gap:14px; align-items:start; }
+  @media (max-width: 800px) { .search-layout { grid-template-columns:1fr; } }
+  .search-meta { display:flex; gap:10px; align-items:center; color:var(--muted); font-size:13px; margin-bottom:10px; flex-wrap:wrap; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:12px; font-weight:600; letter-spacing:.02em; }
+  .badge.hit { background:#1f9d5522; color:#1f9d55; } .badge.miss { background:#d9822b22; color:#d9822b; }
+  .badge.found { background:#1f9d5522; color:#1f9d55; } .badge.empty { background:var(--line); color:var(--muted); }
+  .hit-card { padding:10px 0; border-bottom:1px solid var(--line); } .hit-card:last-child { border-bottom:none; }
+  .hit-card h4 { margin:0 0 2px; font-size:15px; } .hit-card h4 a { color:var(--accent); text-decoration:none; cursor:pointer; }
+  .hit-sub { color:var(--muted); font-size:12px; margin-bottom:4px; }
+  .snippet { font-size:13px; margin:2px 0; } .snippet mark { background:#ffd54a66; color:inherit; padding:0 1px; border-radius:2px; }
+  #recent-list { list-style:none; margin:0; padding:0; } #recent-list li { padding:6px 0; border-bottom:1px solid var(--line); cursor:pointer; font-size:13px; }
+  #recent-list li:hover { color:var(--accent); } .recent-q { display:flex; justify-content:space-between; gap:6px; }
+  .recent-sub { color:var(--muted); font-size:11px; }
+  /* ---- Шардінг / Map-Reduce (п. 13–14) ---- */
+  .bar-row { display:grid; grid-template-columns:minmax(90px,150px) 1fr minmax(70px,max-content); gap:8px; align-items:center; font-size:13px; margin:4px 0; }
+  .bar { height:14px; background:var(--accent); border-radius:3px; min-width:2px; }
+  .bar-track { background:var(--bg); border-radius:3px; }
+  pre.plan { background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:8px; font-size:12px; overflow-x:auto; white-space:pre; margin:6px 0 12px; }
+  .task { font-weight:600; } .ok { color:#1f9d55; font-weight:600; } .bad { color:var(--err); font-weight:600; }
+  .grid-2 { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:10px; }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  table.static tbody tr { cursor:default; }
 </style>
 </head>
 <body>
@@ -114,6 +137,9 @@
         <label>Тіло <input name="celestial_body_id" required style="width:110px"></label>
         <label>Рік запуску <input name="launch_year" type="number" min="1950" max="2100" required style="width:100px"></label>
         <label>Опис <input name="description"></label>
+        <label style="flex:1 1 100%">Звіт (англ., для повнотекстового пошуку)
+          <textarea name="report" rows="2" placeholder="The rover landed near the crater and sampled the soil."></textarea>
+        </label>
         <button class="btn" type="submit">Додати</button>
       </form>
       <div class="error" id="add-error"></div>
@@ -121,11 +147,74 @@
   </section>
 
   <section class="page" id="tab-search">
-    <div class="card placeholder">Сторінка пошуку (Юлія)</div>
+    <div class="card">
+      <form id="search-form" class="row">
+        <label style="flex:1 1 260px">Запит <input name="q" placeholder="landing water ice" autocomplete="off"></label>
+        <label>Тіло <input name="body" placeholder="mars" style="width:100px"></label>
+        <label>Тип
+          <select name="type"><option value="">усі</option><option>ROVER</option><option>ORBITER</option><option>LANDER</option><option>CREWED</option><option>PROBE</option></select>
+        </label>
+        <label>Статус
+          <select name="status"><option value="">усі</option><option>PLANNED</option><option>ACTIVE</option><option>COMPLETED</option><option>FAILED</option></select>
+        </label>
+        <label>Рік від <input name="year_from" type="number" style="width:90px"></label>
+        <label>Рік до <input name="year_to" type="number" style="width:90px"></label>
+        <button class="btn" type="submit">Шукати</button>
+      </form>
+    </div>
+    <div class="search-layout">
+      <div class="card">
+        <div class="search-meta" id="search-meta">Введіть запит — пошук іде по назві, звіту й опису (Elasticsearch, аналізатор english).</div>
+        <div id="search-results"></div>
+        <div class="pager" id="search-pager" hidden>
+          <button class="btn secondary" id="s-prev">←</button>
+          <span id="s-page-info"></span>
+          <button class="btn secondary" id="s-next">→</button>
+        </div>
+      </div>
+      <div class="card">
+        <h3 style="margin:0 0 8px;font-size:15px">Останні запити</h3>
+        <ul id="recent-list"></ul>
+      </div>
+    </div>
   </section>
 
   <section class="page" id="tab-sharding">
-    <div class="card placeholder">Шардінг / Map-Reduce (Віра)</div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+        <h3 style="margin:0">Розподіл даних по шардах</h3>
+        <button class="btn secondary" id="dist-refresh">Оновити</button>
+      </div>
+      <p class="search-meta" id="dist-meta" style="margin:6px 0 10px"></p>
+      <div id="dist-nodes"></div>
+      <details style="margin-top:10px"><summary style="cursor:pointer;color:var(--muted)">Усі шарди</summary>
+        <div class="table-wrap"><table class="static"><thead><tr><th>Шард</th><th>Вузол</th><th class="num">Рядків</th><th class="num">Розмір</th></tr></thead>
+        <tbody id="dist-shards"></tbody></table></div>
+      </details>
+    </div>
+
+    <div class="card">
+      <form id="explain-form" class="row">
+        <h3 style="margin:0;flex:1 1 100%">EXPLAIN: один шард чи всі</h3>
+        <label>Небесне тіло <input name="body" value="mars" style="width:120px"></label>
+        <button class="btn" type="submit">Показати план</button>
+      </form>
+      <div id="explain-out" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card">
+      <form id="mr-form" class="row">
+        <h3 style="margin:0;flex:1 1 100%">Map-Reduce напряму по шардах</h3>
+        <label>Задача
+          <select name="job">
+            <option value="decades">Місії та частка успішних за десятиліттями</option>
+            <option value="terms">Топ-20 термінів у звітах за небесними тілами</option>
+          </select>
+        </label>
+        <button class="btn" type="submit" id="mr-run">Запустити</button>
+      </form>
+      <div id="mr-out" style="margin-top:12px"></div>
+    </div>
   </section>
 </main>
 
@@ -184,7 +273,7 @@ async function showDetail(id) {
   const m = await res.json();
   $('detail-title').textContent = m.name;
   const dl = $('detail-body'); dl.replaceChildren();
-  const labels = { type:'Тип', status:'Статус', agency_id:'Агентство', celestial_body_id:'Тіло', launch_year:'Рік запуску', description:'Опис', id:'ID' };
+  const labels = { type:'Тип', status:'Статус', agency_id:'Агентство', celestial_body_id:'Тіло', launch_year:'Рік запуску', description:'Опис', report:'Звіт', id:'ID' };
   for (const [k, label] of Object.entries(labels)) {
     const dt = document.createElement('dt'); dt.textContent = label;
     const dd = document.createElement('dd'); dd.textContent = m[k] || '–';
@@ -257,6 +346,188 @@ $('rate').addEventListener('change', () =>
 })();
 
 loadMissions(); refreshStats();
+// ================= Пошук (п. 15): Elasticsearch + кеш Redis =================
+const S_PAGE = 10;
+let sParams = null, sOffset = 0, sTotal = 0;
+
+function el(tag, attrs = {}, text) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+async function runSearch() {
+  const params = new URLSearchParams(sParams);
+  params.set('limit', S_PAGE); params.set('offset', sOffset);
+  const meta = $('search-meta'), box = $('search-results');
+  try {
+    const res = await fetch('/api/search?' + params);
+    if (!res.ok) throw new Error(res.status);
+    const data = await res.json();
+    sTotal = data.total;
+    meta.replaceChildren(
+      el('span', { class: 'badge ' + (data.cache === 'HIT' ? 'hit' : 'miss') }, data.cache),
+      el('span', {}, `${data.took_ms.toLocaleString('uk')} мс`),
+      el('span', {}, `· знайдено ${data.total.toLocaleString('uk')}`));
+    box.replaceChildren();
+    if (!data.items.length) box.appendChild(el('div', { class: 'placeholder' }, 'Нічого не знайдено'));
+    for (const h of data.items) {
+      const m = h.mission, card = el('div', { class: 'hit-card' }), title = el('h4');
+      const a = el('a', { href: '#' });
+      // фрагменти з ES уже HTML-екрановані (encoder: html) — безпечно вставляти як HTML
+      if (h.highlights.name) a.innerHTML = h.highlights.name[0]; else a.textContent = m.name;
+      a.addEventListener('click', (e) => { e.preventDefault(); openMission(m.id); });
+      title.appendChild(a);
+      card.append(title, el('div', { class: 'hit-sub' }, `${m.type} · ${m.status} · ${m.agency_id} · ${m.celestial_body_id} · ${m.launch_year}`));
+      const frags = [...(h.highlights.report || []), ...(h.highlights.description || [])];
+      if (frags.length) for (const f of frags) { const p = el('p', { class: 'snippet' }); p.innerHTML = '… ' + f + ' …'; card.appendChild(p); }
+      else if (m.report) card.appendChild(el('p', { class: 'snippet' }, m.report.slice(0, 160) + (m.report.length > 160 ? '…' : '')));
+      box.appendChild(card);
+    }
+    $('search-pager').hidden = data.total <= S_PAGE;
+    $('s-page-info').textContent = `${data.total ? sOffset + 1 : 0}–${Math.min(sOffset + S_PAGE, data.total)} з ${data.total}`;
+    $('s-prev').disabled = sOffset === 0;
+    $('s-next').disabled = sOffset + S_PAGE >= data.total;
+  } catch (e) {
+    meta.textContent = 'Помилка пошуку';
+  }
+  loadRecent();
+}
+
+async function loadRecent() {
+  const ul = $('recent-list');
+  try {
+    const items = await (await fetch('/api/search/recent?limit=20')).json();
+    ul.replaceChildren();
+    if (!items.length) ul.appendChild(el('li', { style: 'cursor:default;color:var(--muted)' }, 'Ще немає запитів'));
+    for (const r of items) {
+      const li = el('li'), row = el('div', { class: 'recent-q' });
+      row.append(el('span', {}, r.query || '(без тексту)'),
+                 el('span', { class: 'badge ' + (r.status === 'Знайдено' ? 'found' : 'empty') }, r.status));
+      const f = Object.entries(r.filters).map(([k, v]) => `${k}=${v}`).join(', ');
+      li.append(row, el('div', { class: 'recent-sub' },
+        `${r.total} · ${r.cache}${f ? ' · ' + f : ''} · ${new Date(r.at).toLocaleTimeString('uk')}`));
+      li.addEventListener('click', () => {
+        const form = $('search-form'); form.reset();
+        form.q.value = r.query;
+        for (const [k, v] of Object.entries(r.filters)) if (form[k]) form[k].value = typeof v === 'string' && form[k].tagName === 'SELECT' ? v.toUpperCase() : v;
+        form.requestSubmit();
+      });
+      ul.appendChild(li);
+    }
+  } catch (_) {}
+}
+
+$('search-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  sParams = new URLSearchParams();
+  for (const [k, v] of new FormData(e.target)) if (v !== '') sParams.set(k, v);
+  sOffset = 0; runSearch();
+});
+$('s-prev').addEventListener('click', () => { sOffset = Math.max(0, sOffset - S_PAGE); runSearch(); });
+$('s-next').addEventListener('click', () => { sOffset += S_PAGE; runSearch(); });
+
+// Перехід з результату пошуку до картки місії на вкладці «Місії»
+function openMission(id) {
+  document.querySelector('#tabs button[data-tab="missions"]').click();
+  showDetail(id);
+}
+
+// ================= Шардінг (п. 13) =================
+function bars(container, rows, valueKey, labelFn, suffixFn) {
+  const max = Math.max(1, ...rows.map(r => r[valueKey]));
+  container.replaceChildren();
+  for (const r of rows) {
+    const row = el('div', { class: 'bar-row' }), track = el('div', { class: 'bar-track' });
+    const bar = el('div', { class: 'bar' }); bar.style.width = (100 * r[valueKey] / max) + '%';
+    track.appendChild(bar);
+    row.append(el('span', {}, labelFn(r)), track, el('span', { class: 'num', style: 'text-align:right' }, suffixFn(r)));
+    container.appendChild(row);
+  }
+}
+
+async function loadDistribution() {
+  try {
+    const res = await fetch('/api/sharding/distribution');
+    if (!res.ok) throw new Error(res.status);
+    const d = await res.json();
+    $('dist-meta').textContent = `Ключ розподілу: ${d.distribution_column} · ${d.total_rows.toLocaleString('uk')} рядків · ${d.shards.length} шардів на ${d.nodes.length} вузлах`;
+    bars($('dist-nodes'), d.nodes, 'rows', n => n.node, n => `${n.rows.toLocaleString('uk')} (${d.total_rows ? Math.round(100 * n.rows / d.total_rows) : 0}%)`);
+    const tb = $('dist-shards'); tb.replaceChildren();
+    for (const s of d.shards) {
+      const tr = el('tr');
+      tr.append(el('td', {}, s.shard_id), el('td', {}, s.node), el('td', { class: 'num' }, s.rows.toLocaleString('uk')),
+                el('td', { class: 'num' }, s.size_bytes ? (s.size_bytes / 1024).toFixed(0) + ' КБ' : '–'));
+      tb.appendChild(tr);
+    }
+  } catch (_) { $('dist-meta').textContent = 'Шардінг недоступний (потрібен Citus або запуск без DATABASE_URL)'; }
+}
+$('dist-refresh').addEventListener('click', loadDistribution);
+
+$('explain-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const out = $('explain-out'); out.replaceChildren();
+  const res = await fetch('/api/sharding/explain?body=' + encodeURIComponent(e.target.body.value));
+  if (!res.ok) { out.appendChild(el('div', { class: 'error' }, 'Помилка ' + res.status)); return; }
+  for (const p of await res.json()) {
+    const h = el('div'); h.append(el('b', {}, p.label + ': '),
+      el('span', { class: 'task' }, p.task_count === null ? '–' : `Task Count: ${p.task_count}` + (p.task_count === 1 ? ' (один шард)' : '')));
+    out.append(h, el('div', { class: 'recent-sub' }, p.sql), el('pre', { class: 'plan' }, p.plan));
+  }
+});
+
+// ================= Map-Reduce (п. 14) =================
+$('mr-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const out = $('mr-out'); out.replaceChildren(el('div', { class: 'search-meta' }, 'Виконується…'));
+  $('mr-run').disabled = true;
+  try {
+    const res = await fetch('/api/mapreduce/' + e.target.job.value);
+    if (!res.ok) throw new Error(res.status);
+    const r = await res.json();
+    out.replaceChildren();
+    const check = el('div', { class: 'search-meta' });
+    check.append(el('span', { class: r.match ? 'ok' : 'bad' }, r.match ? '✓ збігається з агрегацією через координатор' : '✗ не збігається з координатором'),
+      el('span', {}, `· map (паралельно): ${r.map_ms} мс · reduce: ${r.reduce_ms} мс · координатор: ${r.coordinator_ms} мс`));
+    out.appendChild(check);
+
+    out.appendChild(el('h4', { style: 'margin:10px 0 4px' }, 'Внесок кожного шарда (вузла) і час map'));
+    const contrib = el('div'); out.appendChild(contrib);
+    bars(contrib, r.per_node, 'rows', n => n.node, n => `${n.rows.toLocaleString('uk')} · ${n.map_ms} мс`);
+    const shardsLine = el('div', { class: 'recent-sub' }, r.per_node.map(n => `${n.node}: ${n.shard_tables.join(', ')}`).join(' | '));
+    out.appendChild(shardsLine);
+
+    out.appendChild(el('h4', { style: 'margin:14px 0 4px' }, 'Підсумок'));
+    if (r.job === 'decades') {
+      const wrap = el('div', { class: 'table-wrap' }), t = el('table', { class: 'static' });
+      const head = el('tr'); ['Десятиліття', 'Місій', 'Успішних', 'Невдалих', 'Частка успішних'].forEach((h, i) => head.appendChild(el('th', i ? { class: 'num' } : {}, h)));
+      const tb = el('tbody');
+      for (const d of r.result) {
+        const tr = el('tr');
+        tr.append(el('td', {}, d.decade + '-ті'), el('td', { class: 'num' }, d.missions.toLocaleString('uk')),
+          el('td', { class: 'num' }, d.completed.toLocaleString('uk')), el('td', { class: 'num' }, d.failed.toLocaleString('uk')),
+          el('td', { class: 'num' }, d.success_rate === null ? '–' : (100 * d.success_rate).toFixed(1) + '%'));
+        tb.appendChild(tr);
+      }
+      const th = el('thead'); th.appendChild(head); t.append(th, tb); wrap.appendChild(t); out.appendChild(wrap);
+    } else {
+      const grid = el('div', { class: 'grid-2' });
+      for (const [body, terms] of Object.entries(r.result)) {
+        const c = el('div'); c.appendChild(el('b', {}, body));
+        const list = el('div'); bars(list, terms.map(([t, n]) => ({ t, n })), 'n', x => x.t, x => x.n.toLocaleString('uk'));
+        c.appendChild(list); grid.appendChild(c);
+      }
+      out.appendChild(grid);
+    }
+  } catch (err) {
+    out.replaceChildren(el('div', { class: 'error' }, 'Помилка map-reduce: ' + err.message));
+  } finally { $('mr-run').disabled = false; }
+});
+
+// Ліниве завантаження вкладок
+document.querySelector('#tabs button[data-tab="search"]').addEventListener('click', loadRecent);
+document.querySelector('#tabs button[data-tab="sharding"]').addEventListener('click', loadDistribution);
 </script>
 </body>
 </html>

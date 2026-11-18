@@ -76,7 +76,7 @@ def test_es_search_builds_query_and_maps_hits():
     adapter = ElasticsearchMissionSearchAdapter(client=es)
     page = asyncio.run(adapter.search("rover", MissionFilter(body="Mars", year_from=2000, limit=5, offset=10)))
 
-    assert page.total == 1 and page.items[0] == m
+    assert page.total == 1 and page.items[0].mission == m
     q = es.last_search
     assert q["from_"] == 10 and q["size"] == 5
     assert q["query"]["bool"]["must"][0]["multi_match"]["query"] == "rover"

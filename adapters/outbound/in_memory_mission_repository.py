@@ -1,13 +1,18 @@
 """Адаптери в пам'яті — для тестів і запуску без Docker.
 Реалізують ті самі порти, що й SqlMissionRepository / ElasticsearchMissionSearchAdapter /
-RedisRecommendationCacheAdapter, тому вибір робиться лише в app.py."""
-from typing import Dict, List, Optional
+Redis-адаптери, тому вибір робиться лише в app.py."""
+import html
+import re
+from typing import AsyncIterator, Dict, List, Optional
 
 from application.mission_ports import (
-    MissionRepositoryPort, MissionSearchPort, RecommendationCachePort,
+    MissionRepositoryPort, MissionSearchPort, RecentQueriesPort, RecommendationCachePort,
+    SearchCachePort,
 )
 from domain.dtos import RecommendationDTO
-from domain.mission_dtos import MissionDTO, MissionFilter, MissionPageDTO
+from domain.mission_dtos import (
+    MissionDTO, MissionFilter, RecentQueryDTO, SearchHitDTO, SearchPageDTO,
+)
 
 
 def _match(m: MissionDTO, f: MissionFilter) -> bool:
@@ -21,6 +26,9 @@ def _match(m: MissionDTO, f: MissionFilter) -> bool:
 class InMemoryMissionRepository(MissionRepositoryPort):
     def __init__(self):
         self._items: Dict[str, MissionDTO] = {}
+
+    def all(self) -> List[MissionDTO]:
+        return list(self._items.values())
 
     async def save(self, mission: MissionDTO) -> None:
         self._items[mission.id] = mission
@@ -42,9 +50,24 @@ class InMemoryMissionRepository(MissionRepositoryPort):
             return len(self._items)
         return sum(1 for m in self._items.values() if _match(m, flt))
 
+    async def iter_batches(self, batch_size: int = 1000) -> AsyncIterator[List[MissionDTO]]:
+        items = self.all()
+        for i in range(0, len(items), batch_size):
+            yield items[i:i + batch_size]
+
+
+def _highlight(text: str, words: List[str]) -> Optional[str]:
+    """Як ES з encoder: html — спершу екранування, потім <mark> навколо збігів."""
+    if not text or not words:
+        return None
+    escaped = html.escape(text)
+    pattern = re.compile("|".join(re.escape(html.escape(w)) for w in words), re.IGNORECASE)
+    marked, n = pattern.subn(lambda m: f"<mark>{m.group(0)}</mark>", escaped)
+    return marked if n else None
+
 
 class InMemoryMissionSearch(MissionSearchPort):
-    """Спрощена заміна Elasticsearch: пошук підрядка в назві/описі."""
+    """Спрощена заміна Elasticsearch: пошук підрядка в назві/звіті/описі (без стемінгу)."""
 
     def __init__(self):
         self._items: Dict[str, MissionDTO] = {}
@@ -53,11 +76,21 @@ class InMemoryMissionSearch(MissionSearchPort):
         for m in missions:
             self._items[m.id] = m
 
-    async def search(self, text: str, flt: MissionFilter) -> MissionPageDTO:
+    async def count(self) -> int:
+        return len(self._items)
+
+    async def search(self, text: str, flt: MissionFilter) -> SearchPageDTO:
         words = text.lower().split()
         found = [m for m in self._items.values() if _match(m, flt)
-                 and all(w in f"{m.name} {m.description}".lower() for w in words)]
-        return MissionPageDTO(total=len(found), items=found[flt.offset: flt.offset + flt.limit])
+                 and all(w in f"{m.name} {m.report} {m.description}".lower() for w in words)]
+        if not words:
+            found.sort(key=lambda m: m.launch_year, reverse=True)
+        hits = []
+        for m in found[flt.offset: flt.offset + flt.limit]:
+            hl = {f: [h] for f in ("name", "report", "description")
+                  if (h := _highlight(getattr(m, f), words))}
+            hits.append(SearchHitDTO(mission=m, highlights=hl))
+        return SearchPageDTO(total=len(found), items=hits)
 
     async def find_similar(self, mission: MissionDTO, limit: int) -> List[MissionDTO]:
         def score(m: MissionDTO) -> float:
@@ -79,3 +112,29 @@ class InMemoryRecommendationCache(RecommendationCachePort):
 
     async def put(self, mission_id: str, items: List[RecommendationDTO]) -> None:
         self._data[mission_id] = items
+
+
+class InMemorySearchCache(SearchCachePort):
+    """Без TTL: у пам'яті процесу кеш живе до перезапуску (TTL важливий лише для Redis)."""
+
+    def __init__(self):
+        self._data: Dict[str, str] = {}
+
+    async def get(self, key: str) -> Optional[SearchPageDTO]:
+        raw = self._data.get(key)
+        return SearchPageDTO.model_validate_json(raw) if raw is not None else None
+
+    async def put(self, key: str, page: SearchPageDTO, ttl_seconds: int) -> None:
+        self._data[key] = page.model_dump_json()
+
+
+class InMemoryRecentQueries(RecentQueriesPort):
+    def __init__(self):
+        self._items: List[RecentQueryDTO] = []
+
+    async def push(self, entry: RecentQueryDTO, keep: int = 20) -> None:
+        self._items.insert(0, entry)
+        del self._items[keep:]
+
+    async def list(self, limit: int = 20) -> List[RecentQueryDTO]:
+        return self._items[:limit]

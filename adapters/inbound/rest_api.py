@@ -3,13 +3,13 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query
 
 from application.mission_ports import (
-    GeneratorControlPort, GetRecommendationsUseCase, MissionCommandUseCase,
-    MissionQueryUseCase, MissionSearchUseCase,
+    GeneratorControlPort, GetRecommendationsUseCase, MapReduceUseCase, MissionCommandUseCase,
+    MissionQueryUseCase, MissionSearchUseCase, ShardingUseCase,
 )
 from domain.dtos import RecommendationDTO
 from domain.mission_dtos import (
-    GeneratorRateDTO, MissionCreateRequest, MissionDTO, MissionFilter,
-    MissionPageDTO, StatsDTO,
+    ExplainDTO, GeneratorRateDTO, MapReduceResultDTO, MissionCreateRequest, MissionDTO,
+    MissionFilter, MissionPageDTO, RecentQueryDTO, SearchResultDTO, ShardDistributionDTO, StatsDTO,
 )
 
 
@@ -48,15 +48,18 @@ class MissionQueryRestController:
 
 
 class MissionSearchRestController:
-    """Пошук і рекомендації (схема Query, Рис. 3.2):
-    GET /api/search?q=марсохід&body=mars -> Elasticsearch
+    """Пошук і рекомендації (схема Query, Рис. 3.2; п. 15):
+    GET /api/search?q=landing&body=mars -> Redis (кеш) / Elasticsearch, з HIT/MISS і часом у мс
+    GET /api/search/recent -> останні запити (Redis LPUSH/LTRIM)
     GET /api/missions/{id}/recommendations -> Redis (кеш) / Elasticsearch more_like_this"""
 
     def __init__(self, search: MissionSearchUseCase, recommendations: GetRecommendationsUseCase):
         self._search = search
         self._recs = recommendations
         self.router = APIRouter(prefix="/api")
-        self.router.add_api_route("/search", self.search, methods=["GET"], response_model=MissionPageDTO)
+        self.router.add_api_route("/search", self.search, methods=["GET"], response_model=SearchResultDTO)
+        self.router.add_api_route("/search/recent", self.recent, methods=["GET"],
+                                  response_model=List[RecentQueryDTO])
         self.router.add_api_route("/missions/{mission_id}/recommendations", self.recommend,
                                   methods=["GET"], response_model=List[RecommendationDTO])
 
@@ -70,10 +73,13 @@ class MissionSearchRestController:
         year_to: Optional[int] = None,
         limit: int = 10,
         offset: int = 0,
-    ) -> MissionPageDTO:
+    ) -> SearchResultDTO:
         flt = MissionFilter(body=body, type=type, status=status, year_from=year_from,
                             year_to=year_to, limit=limit, offset=offset)
         return await self._search.search(q, flt)
+
+    async def recent(self, limit: int = Query(20, ge=1, le=50)) -> List[RecentQueryDTO]:
+        return await self._search.recent(limit)
 
     async def recommend(self, mission_id: str, limit: int = Query(5, ge=1, le=20)) -> List[RecommendationDTO]:
         try:
@@ -110,3 +116,33 @@ class GeneratorControlRestController:
     async def set_rate(self, body: GeneratorRateDTO) -> GeneratorRateDTO:
         self._gen.set_rate(body.docs_per_second)
         return body
+
+
+class ShardingRestController:
+    """П. 13–14: розподіл по шардах, EXPLAIN, власний map-reduce."""
+
+    def __init__(self, sharding: ShardingUseCase, mapreduce: MapReduceUseCase):
+        self._sharding = sharding
+        self._mapreduce = mapreduce
+        self.router = APIRouter(prefix="/api")
+        self.router.add_api_route("/sharding/distribution", self.distribution, methods=["GET"],
+                                  response_model=ShardDistributionDTO)
+        self.router.add_api_route("/sharding/explain", self.explain, methods=["GET"],
+                                  response_model=List[ExplainDTO])
+        self.router.add_api_route("/mapreduce/{job}", self.run_job, methods=["GET"],
+                                  response_model=MapReduceResultDTO)
+
+    async def distribution(self) -> ShardDistributionDTO:
+        return await self._sharding.distribution()
+
+    async def explain(self, body: str = "mars") -> List[ExplainDTO]:
+        try:
+            return await self._sharding.explain(body)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
+    async def run_job(self, job: str) -> MapReduceResultDTO:
+        try:
+            return await self._mapreduce.run(job)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Невідома задача map-reduce (є: decades, terms)")

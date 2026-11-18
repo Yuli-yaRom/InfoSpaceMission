@@ -1,6 +1,10 @@
-"""SQL-адаптер основного сховища (PostgreSQL через SQLAlchemy async + asyncpg).
-Працює з будь-якою БД, яку підтримує SQLAlchemy async (у тестах — SQLite через aiosqlite)."""
-from typing import List, Optional
+"""SQL-адаптер основного сховища (PostgreSQL / Citus через SQLAlchemy async + asyncpg).
+Працює з будь-якою БД, яку підтримує SQLAlchemy async (у тестах — SQLite через aiosqlite).
+
+Ключ шардування (п. 13): id (UUIDv4) з хеш-розподілом Citus — рівномірно по шардах,
+а пошук місії за id іде рівно в один шард. Обґрунтування й заміри — docs/db_topology.md.
+"""
+from typing import AsyncIterator, List, Optional
 
 from sqlalchemy import Integer, String, Text, func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
@@ -8,6 +12,8 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from application.mission_ports import MissionRepositoryPort
 from domain.mission_dtos import MissionDTO, MissionFilter
+
+DISTRIBUTION_COLUMN = "id"
 
 
 class Base(DeclarativeBase):
@@ -17,6 +23,7 @@ class Base(DeclarativeBase):
 class MissionRow(Base):
     __tablename__ = "missions"
 
+    # Колонка розподілу Citus (входить у PRIMARY KEY, як того вимагає Citus)
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     name: Mapped[str] = mapped_column(String(255))
     type: Mapped[str] = mapped_column(String(32), index=True)
@@ -25,11 +32,17 @@ class MissionRow(Base):
     celestial_body_id: Mapped[str] = mapped_column(String(64), index=True)
     launch_year: Mapped[int] = mapped_column(Integer, index=True)
     description: Mapped[str] = mapped_column(Text, default="")
+    report: Mapped[str] = mapped_column(Text, default="")
+
+    @classmethod
+    def from_dto(cls, m: MissionDTO) -> "MissionRow":
+        return cls(**m.model_dump())
 
     def to_dto(self) -> MissionDTO:
         return MissionDTO(id=self.id, name=self.name, type=self.type, status=self.status,
                           agency_id=self.agency_id, celestial_body_id=self.celestial_body_id,
-                          launch_year=self.launch_year, description=self.description or "")
+                          launch_year=self.launch_year, description=self.description or "",
+                          report=self.report or "")
 
 
 class SqlMissionRepository(MissionRepositoryPort):
@@ -37,6 +50,10 @@ class SqlMissionRepository(MissionRepositoryPort):
                  engine: Optional[AsyncEngine] = None):
         self._engine = engine or create_async_engine(url, pool_pre_ping=True)
         self._session = async_sessionmaker(self._engine, expire_on_commit=False)
+
+    @property
+    def engine(self) -> AsyncEngine:
+        return self._engine
 
     async def init_schema(self) -> None:
         async with self._engine.begin() as conn:
@@ -66,9 +83,10 @@ class SqlMissionRepository(MissionRepositoryPort):
 
     async def save_many(self, missions: List[MissionDTO]) -> None:
         async with self._session.begin() as s:
-            s.add_all(MissionRow(**m.model_dump()) for m in missions)
+            s.add_all(MissionRow.from_dto(m) for m in missions)
 
     async def find_by_id(self, mission_id: str) -> Optional[MissionDTO]:
+        # Фільтр за колонкою розподілу -> Citus маршрутизує запит рівно в один шард
         async with self._session() as s:
             row = await s.get(MissionRow, mission_id)
             return row.to_dto() if row else None
@@ -84,3 +102,15 @@ class SqlMissionRepository(MissionRepositoryPort):
         stmt = self._where(select(func.count()).select_from(MissionRow), flt)
         async with self._session() as s:
             return int((await s.execute(stmt)).scalar_one())
+
+    async def iter_batches(self, batch_size: int = 1000) -> AsyncIterator[List[MissionDTO]]:
+        last_id = ""
+        while True:
+            stmt = (select(MissionRow).where(MissionRow.id > last_id)
+                    .order_by(MissionRow.id).limit(batch_size))
+            async with self._session() as s:
+                rows = (await s.scalars(stmt)).all()
+            if not rows:
+                return
+            last_id = rows[-1].id
+            yield [r.to_dto() for r in rows]
