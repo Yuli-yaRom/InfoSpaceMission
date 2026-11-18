@@ -25,11 +25,11 @@ _SQL = {
                count(*) AS total,
                count(*) FILTER (WHERE upper(status) = 'COMPLETED') AS completed,
                count(*) FILTER (WHERE upper(status) = 'FAILED') AS failed
-        FROM {table} GROUP BY 1""",
+        FROM {table} WHERE created_at <= $1 GROUP BY 1""",
     "terms": """
         SELECT lower(celestial_body_id) AS body, w AS term, count(*) AS cnt
         FROM {table}, regexp_split_to_table(lower(report), '[^a-z]+') AS w
-        WHERE w <> '' GROUP BY 1, 2""",
+        WHERE w <> '' AND created_at <= $1 GROUP BY 1, 2""",
 }
 
 _PLACEMENTS_SQL = """
@@ -141,20 +141,28 @@ class CitusShardAdapter(ShardingInfoPort, ShardMapPort):
     def _finish(job: str, acc: Any) -> Any:
         return acc if job == "decades" else {b: dict(c) for b, c in acc.items()}
 
-    async def run_map(self, node: str, shard_tables: List[str], job: str) -> Tuple[int, Any]:
+    async def cutoff(self) -> Any:
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            # Запас 2 с: транзакції генератора, що почалися до зрізу, але ще не закомічені,
+            # інакше могли б потрапити лише в один із двох підрахунків
+            return await conn.fetchval("SELECT now() - interval '2 seconds'")
+
+    async def run_map(self, node: str, shard_tables: List[str], job: str,
+                      cutoff: Optional[Any] = None) -> Tuple[int, Any]:
         host, port = self._nodes[node]
         conn = await self._coord.with_host(host, port).connect()  # напряму до воркера
         try:
             acc: Any = {}
             rows = 0
             for table in shard_tables:
-                rows += await conn.fetchval(f"SELECT count(*) FROM {_ident(table)}")
-                acc = self._fold(job, await conn.fetch(_SQL[job].format(table=_ident(table))), acc)
+                rows += await conn.fetchval(f"SELECT count(*) FROM {_ident(table)} WHERE created_at <= $1", cutoff)
+                acc = self._fold(job, await conn.fetch(_SQL[job].format(table=_ident(table)), cutoff), acc)
             return rows, self._finish(job, acc)
         finally:
             await conn.close()
 
-    async def run_on_coordinator(self, job: str) -> Any:
+    async def run_on_coordinator(self, job: str, cutoff: Optional[Any] = None) -> Any:
         pool = await self._get_pool()
         async with pool.acquire() as conn:
-            return self._finish(job, self._fold(job, await conn.fetch(_SQL[job].format(table="missions")), {}))
+            return self._finish(job, self._fold(job, await conn.fetch(_SQL[job].format(table="missions"), cutoff), {}))

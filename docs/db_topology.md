@@ -94,15 +94,57 @@ docker compose exec citus-coordinator psql -U space -d space -c \
 
 Те саме видно в UI на вкладці «Шардінг / Map-Reduce».
 
-<!-- Вставити сюди вивід citus_shards і обох EXPLAIN після запуску -->
+**Вивід із запущеного кластера (2026-11-18, ~10 600 місій):**
+
+Воркери (`citus_get_active_worker_nodes()`): `citus-worker-1`, `citus-worker-2`, `citus-worker-3`, порт 5432.
+
+Розподіл (аналог `getShardDistribution()`):
+```
+    nodename    | shards | rows |  size
+----------------+--------+------+---------
+ citus-worker-1 |      4 | 3461 | 1808 kB
+ citus-worker-2 |      4 | 3552 | 1864 kB
+ citus-worker-3 |      4 | 3608 | 1832 kB
+```
+≈ 32.6 / 33.4 / 34.0 % — рівномірно.
+
+Запит за ключем розподілу — **один шард** (аналог `SINGLE_SHARD`):
+```
+EXPLAIN SELECT * FROM missions WHERE id = 'ffe68d80-…';
+ Custom Scan (Citus Adaptive)
+   Task Count: 1
+   Tasks Shown: All
+   ->  Task
+         Node: host=citus-worker-1 port=5432 dbname=space
+         ->  Index Scan using missions_pkey_102008 on missions_102008 missions
+               Index Cond: ((id)::text = 'ffe68d80-…'::text)
+```
+
+Запит за тілом — **усі 12 шардів**, координатор зливає результат (аналог `SHARD_MERGE`):
+```
+EXPLAIN SELECT count(*) FROM missions WHERE celestial_body_id = 'mars';
+ Aggregate
+   ->  Custom Scan (Citus Adaptive)
+         Task Count: 12
+         Tasks Shown: One of 12
+         ->  Task
+               Node: host=citus-worker-1 port=5432 dbname=space
+               ->  Aggregate
+                     ->  Bitmap Heap Scan on missions_102008 missions
+                           ->  Bitmap Index Scan on ix_missions_celestial_body_id_102008
+```
 
 ## 5. Map-Reduce (п. 14)
 
 Через координатор агрегація відбувається автоматично: він сам розсилає часткові запити воркерам і зливає
 результат. Щоб показати процес явно, map-reduce написано вручну (`application/mapreduce_service.py`):
 
-1. **Розміщення.** З координатора читаємо, які таблиці-шарди лежать на якому воркері
-   (`pg_dist_shard` ⨝ `pg_dist_placement` ⨝ `pg_dist_node`, лише `shardstate = 1`).
+1. **Розміщення і момент зрізу.** З координатора читаємо, які таблиці-шарди лежать на якому воркері
+   (`pg_dist_shard` ⨝ `pg_dist_placement` ⨝ `pg_dist_node`, лише `shardstate = 1`), і беремо момент зрізу
+   `now() - 2 s` за годинником БД. І map, і перевірка рахують лише рядки з `created_at <= зріз`:
+   генератор пише безперервно, і без зрізу координатор бачив би кілька нових рядків, яких не бачила map-фаза
+   (це виявилося під час першого запуску на реальному кластері). Запас 2 с покриває транзакції, які почалися до
+   зрізу, але ще не закомічені.
 2. **Map.** `asyncio.gather` — паралельне пряме підключення (asyncpg) до кожного воркера. Воркер рахує частковий
    результат по своїх шардах; для кожного вузла заміряється `map_ms`.
 3. **Reduce.** Часткові результати зливаються в Python; заміряється `reduce_ms`.

@@ -6,7 +6,9 @@
 """
 from typing import AsyncIterator, List, Optional
 
-from sqlalchemy import Integer, String, Text, func, select
+from datetime import datetime
+
+from sqlalchemy import DateTime, Integer, String, Text, func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -33,6 +35,9 @@ class MissionRow(Base):
     launch_year: Mapped[int] = mapped_column(Integer, index=True)
     description: Mapped[str] = mapped_column(Text, default="")
     report: Mapped[str] = mapped_column(Text, default="")
+    # Час вставки (годинник БД). Map-reduce рахує лише рядки до моменту зрізу, щоб
+    # пряме читання воркерів і перевірка через координатор бачили однакові дані
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     @classmethod
     def from_dto(cls, m: MissionDTO) -> "MissionRow":
@@ -58,6 +63,10 @@ class SqlMissionRepository(MissionRepositoryPort):
     async def init_schema(self) -> None:
         async with self._engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            if conn.dialect.name == "postgresql":
+                # Міграція для бази, створеної до появи created_at (Citus поширює ALTER на всі шарди)
+                await conn.execute(text("ALTER TABLE missions ADD COLUMN IF NOT EXISTS "
+                                        "created_at timestamptz NOT NULL DEFAULT now()"))
 
     async def close(self) -> None:
         await self._engine.dispose()

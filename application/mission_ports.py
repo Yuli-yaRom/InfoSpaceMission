@@ -150,15 +150,21 @@ class ShardMapPort(ABC):
     """
 
     @abstractmethod
+    async def cutoff(self) -> Optional[Any]:
+        """Момент зрізу за годинником БД: рахуються лише рядки, вставлені до нього.
+        Генератор пише постійно, тож без зрізу map і перевірка побачили б різні дані."""
+
+    @abstractmethod
     async def placements(self) -> Dict[str, List[str]]:
         """Вузол -> активні таблиці-шарди на ньому (лише активні розміщення)."""
 
     @abstractmethod
-    async def run_map(self, node: str, shard_tables: List[str], job: str) -> Tuple[int, Any]:
+    async def run_map(self, node: str, shard_tables: List[str], job: str,
+                      cutoff: Optional[Any] = None) -> Tuple[int, Any]:
         """Повертає (кількість рядків, частковий результат) для шардів одного вузла."""
 
     @abstractmethod
-    async def run_on_coordinator(self, job: str) -> Any:
+    async def run_on_coordinator(self, job: str, cutoff: Optional[Any] = None) -> Any:
         """Та сама агрегація через координатор (для перевірки результату)."""
 
 
