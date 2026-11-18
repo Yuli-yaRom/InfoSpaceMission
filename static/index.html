@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>InfoSpaceMission</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --text:#1c2230; --muted:#6a7385; --line:#dfe3ea; --accent:#2f5bea; --err:#c0392b; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#12151c; --card:#1b2029; --text:#e6e9f0; --muted:#98a1b3; --line:#2b3240; --accent:#6c8cff; --err:#ff7b6b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.4 system-ui,sans-serif; background:var(--bg); color:var(--text); }
+  header { background:var(--card); border-bottom:1px solid var(--line); padding:12px 16px; display:flex; flex-wrap:wrap; gap:16px; align-items:center; justify-content:space-between; }
+  h1 { font-size:18px; margin:0; }
+  .stats { display:flex; gap:20px; flex-wrap:wrap; align-items:center; }
+  .stat b { font-size:18px; font-variant-numeric:tabular-nums; }
+  .stat span { color:var(--muted); font-size:12px; display:block; }
+  .slider { display:flex; flex-direction:column; font-size:12px; color:var(--muted); }
+  .slider input { width:200px; }
+  nav { display:flex; gap:4px; padding:8px 16px 0; border-bottom:1px solid var(--line); overflow-x:auto; }
+  nav button { background:none; border:none; padding:8px 14px; cursor:pointer; color:var(--muted); border-bottom:2px solid transparent; font:inherit; white-space:nowrap; }
+  nav button.active { color:var(--accent); border-color:var(--accent); }
+  main { padding:16px; max-width:1100px; margin:0 auto; }
+  .page { display:none; } .page.active { display:block; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:14px; }
+  form.row { display:flex; flex-wrap:wrap; gap:8px; align-items:end; }
+  label { display:flex; flex-direction:column; font-size:12px; color:var(--muted); gap:2px; }
+  input, select, textarea { font:inherit; padding:6px 8px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); }
+  button.btn { padding:7px 14px; border:none; border-radius:6px; background:var(--accent); color:#fff; cursor:pointer; font:inherit; }
+  button.btn.secondary { background:none; color:var(--text); border:1px solid var(--line); }
+  button:disabled { opacity:.5; cursor:default; }
+  .table-wrap { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--muted); font-size:12px; font-weight:600; }
+  tbody tr { cursor:pointer; } tbody tr:hover { background:var(--bg); }
+  .pager { display:flex; gap:10px; align-items:center; margin-top:10px; color:var(--muted); }
+  .error { color:var(--err); font-size:13px; margin-top:6px; }
+  .placeholder { color:var(--muted); text-align:center; padding:40px 0; }
+  dl { display:grid; grid-template-columns:max-content 1fr; gap:4px 14px; margin:0; }
+  dt { color:var(--muted); } dd { margin:0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>InfoSpaceMission</h1>
+  <div class="stats">
+    <div class="stat"><b id="stat-total">–</b><span>документів у БД</span></div>
+    <div class="stat"><b id="stat-rate">–</b><span>док/с (з БД)</span></div>
+    <label class="slider">Швидкість генератора: <b id="rate-label">–</b> док/с
+      <input id="rate" type="range" min="10" max="5000" step="10" value="100">
+    </label>
+  </div>
+</header>
+
+<!-- Спільний каркас. Щоб додати сторінку: 1) кнопка в <nav> з data-tab="id"; 2) <section class="page" id="tab-id"> нижче. -->
+<nav id="tabs">
+  <button data-tab="missions" class="active">Місії</button>
+  <button data-tab="search">Пошук</button>
+  <button data-tab="sharding">Шардінг / Map-Reduce</button>
+</nav>
+
+<main>
+  <section class="page active" id="tab-missions">
+    <div class="card">
+      <form id="filter-form" class="row">
+        <label>Тіло <input name="body" placeholder="mars"></label>
+        <label>Тип
+          <select name="type"><option value="">усі</option><option>ROVER</option><option>ORBITER</option><option>LANDER</option><option>CREWED</option><option>PROBE</option></select>
+        </label>
+        <label>Статус
+          <select name="status"><option value="">усі</option><option>PLANNED</option><option>ACTIVE</option><option>COMPLETED</option><option>FAILED</option></select>
+        </label>
+        <label>Рік від <input name="year_from" type="number" style="width:90px"></label>
+        <label>Рік до <input name="year_to" type="number" style="width:90px"></label>
+        <button class="btn" type="submit">Шукати</button>
+        <button class="btn secondary" type="reset" id="reset">Скинути</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Назва</th><th>Тип</th><th>Статус</th><th>Агентство</th><th>Тіло</th><th>Рік</th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <div class="pager">
+        <button class="btn secondary" id="prev">←</button>
+        <span id="page-info"></span>
+        <button class="btn secondary" id="next">→</button>
+      </div>
+    </div>
+
+    <div class="card" id="detail" hidden>
+      <h3 style="margin-top:0" id="detail-title"></h3>
+      <dl id="detail-body"></dl>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-top:0">Додати місію</h3>
+      <form id="add-form" class="row">
+        <label>Назва <input name="name" required></label>
+        <label>Тип
+          <select name="type"><option>ROVER</option><option>ORBITER</option><option>LANDER</option><option>CREWED</option><option>PROBE</option></select>
+        </label>
+        <label>Статус
+          <select name="status"><option>PLANNED</option><option>ACTIVE</option><option>COMPLETED</option><option>FAILED</option></select>
+        </label>
+        <label>Агентство <input name="agency_id" required style="width:110px"></label>
+        <label>Тіло <input name="celestial_body_id" required style="width:110px"></label>
+        <label>Рік запуску <input name="launch_year" type="number" min="1950" max="2100" required style="width:100px"></label>
+        <label>Опис <input name="description"></label>
+        <button class="btn" type="submit">Додати</button>
+      </form>
+      <div class="error" id="add-error"></div>
+    </div>
+  </section>
+
+  <section class="page" id="tab-search">
+    <div class="card placeholder">Сторінка пошуку (Юлія)</div>
+  </section>
+
+  <section class="page" id="tab-sharding">
+    <div class="card placeholder">Шардінг / Map-Reduce (Віра)</div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const PAGE = 10;
+let offset = 0, total = 0, currentParams = new URLSearchParams();
+
+// ---- Вкладки ----
+document.querySelectorAll('#tabs button').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('#tabs button').forEach(x => x.classList.toggle('active', x === b));
+  document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === 'tab-' + b.dataset.tab));
+}));
+
+// ---- Таблиця ----
+function cell(tr, text) { const td = document.createElement('td'); td.textContent = text; tr.appendChild(td); }
+
+async function loadMissions() {
+  const params = new URLSearchParams(currentParams);
+  params.set('limit', PAGE); params.set('offset', offset);
+  try {
+    const res = await fetch('/api/missions?' + params);
+    if (!res.ok) throw new Error(res.status);
+    const data = await res.json();
+    total = data.total;
+    const tbody = $('rows'); tbody.replaceChildren();
+    for (const m of data.items) {
+      const tr = document.createElement('tr');
+      [m.name, m.type, m.status, m.agency_id, m.celestial_body_id, m.launch_year].forEach(v => cell(tr, v));
+      tr.addEventListener('click', () => showDetail(m.id));
+      tbody.appendChild(tr);
+    }
+    const from = total ? offset + 1 : 0;
+    $('page-info').textContent = `${from}–${Math.min(offset + PAGE, total)} з ${total}`;
+    $('prev').disabled = offset === 0;
+    $('next').disabled = offset + PAGE >= total;
+  } catch (e) {
+    $('page-info').textContent = 'Помилка завантаження';
+  }
+}
+
+$('filter-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  currentParams = new URLSearchParams();
+  for (const [k, v] of new FormData(e.target)) if (v !== '') currentParams.set(k, v);
+  offset = 0; loadMissions();
+});
+$('reset').addEventListener('click', () => setTimeout(() => { currentParams = new URLSearchParams(); offset = 0; loadMissions(); }));
+$('prev').addEventListener('click', () => { offset = Math.max(0, offset - PAGE); loadMissions(); });
+$('next').addEventListener('click', () => { offset += PAGE; loadMissions(); });
+
+// ---- Картка місії ----
+async function showDetail(id) {
+  const res = await fetch('/api/missions/' + encodeURIComponent(id));
+  if (!res.ok) return;
+  const m = await res.json();
+  $('detail-title').textContent = m.name;
+  const dl = $('detail-body'); dl.replaceChildren();
+  const labels = { type:'Тип', status:'Статус', agency_id:'Агентство', celestial_body_id:'Тіло', launch_year:'Рік запуску', description:'Опис', id:'ID' };
+  for (const [k, label] of Object.entries(labels)) {
+    const dt = document.createElement('dt'); dt.textContent = label;
+    const dd = document.createElement('dd'); dd.textContent = m[k] || '–';
+    dl.append(dt, dd);
+  }
+  $('detail').hidden = false;
+  $('detail').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+// ---- Додавання місії ----
+$('add-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('add-error').textContent = '';
+  const body = Object.fromEntries(new FormData(e.target));
+  body.launch_year = Number(body.launch_year);
+  const res = await fetch('/api/missions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!res.ok) {
+    let msg = 'Помилка ' + res.status;
+    try { const j = await res.json(); if (Array.isArray(j.detail)) msg = j.detail.map(d => d.loc.slice(1).join('.') + ': ' + d.msg).join('; '); } catch (_) {}
+    $('add-error').textContent = msg;
+    return;
+  }
+  e.target.reset();
+  currentParams = new URLSearchParams(); offset = 0;   // нова місія має найбільший рік лише за збігом — показуємо з початку
+  loadMissions(); refreshStats();
+});
+
+// ---- Статистика раз на секунду ----
+let lastTotal = null;
+async function refreshStats() {
+  try {
+    const s = await (await fetch('/api/stats')).json();
+    $('stat-total').textContent = s.total_documents.toLocaleString('uk');
+    if (lastTotal !== null) $('stat-rate').textContent = Math.max(0, s.total_documents - lastTotal).toLocaleString('uk');
+    lastTotal = s.total_documents;
+  } catch (_) {}
+}
+setInterval(refreshStats, 1000);
+
+// ---- Слайдер генератора ----
+$('rate').addEventListener('input', () => $('rate-label').textContent = $('rate').value);
+$('rate').addEventListener('change', () =>
+  fetch('/api/generator', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ docs_per_second: Number($('rate').value) }) }));
+(async () => {
+  try {
+    const r = await (await fetch('/api/generator')).json();
+    $('rate').value = r.docs_per_second; $('rate-label').textContent = r.docs_per_second;
+  } catch (_) {}
+})();
+
+loadMissions(); refreshStats();
+</script>
+</body>
+</html>
