@@ -96,6 +96,8 @@
     <div class="card" id="detail" hidden>
       <h3 style="margin-top:0" id="detail-title"></h3>
       <dl id="detail-body"></dl>
+      <h4 style="margin:14px 0 6px">Схожі місії</h4>
+      <ul id="detail-recs" style="margin:0;padding-left:18px"></ul>
     </div>
 
     <div class="card">
@@ -190,6 +192,27 @@ async function showDetail(id) {
   }
   $('detail').hidden = false;
   $('detail').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  loadRecommendations(id);
+}
+
+// ---- Схожі місії (Elasticsearch + кеш Redis) ----
+async function loadRecommendations(id) {
+  const ul = $('detail-recs'); ul.replaceChildren();
+  try {
+    const res = await fetch('/api/missions/' + encodeURIComponent(id) + '/recommendations');
+    if (!res.ok) throw new Error(res.status);
+    const recs = await res.json();
+    if (!recs.length) { const li = document.createElement('li'); li.textContent = '–'; ul.appendChild(li); }
+    for (const r of recs) {
+      const li = document.createElement('li');
+      const a = document.createElement('a'); a.href = '#'; a.textContent = r.name;
+      a.addEventListener('click', (e) => { e.preventDefault(); showDetail(r.mission_id); });
+      const why = document.createElement('span'); why.style.color = 'var(--muted)'; why.textContent = ' — ' + r.similarity_reason;
+      li.append(a, why); ul.appendChild(li);
+    }
+  } catch (_) {
+    const li = document.createElement('li'); li.textContent = 'Не вдалося завантажити'; ul.appendChild(li);
+  }
 }
 
 // ---- Додавання місії ----
