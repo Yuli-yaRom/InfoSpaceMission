@@ -25,13 +25,13 @@ def _id_of(client, name):
 
 def test_search_by_text(client):
     data = client.get("/api/search", params={"q": "марсохід"}).json()
-    names = {m["name"] for m in data["items"]}
+    names = {h["mission"]["name"] for h in data["items"]}
     assert {"Curiosity", "Perseverance", "Opportunity", "Zhurong"} <= names
 
 
 def test_search_with_filter(client):
     data = client.get("/api/search", params={"q": "Місяць", "type": "CREWED"}).json()
-    assert {m["name"] for m in data["items"]} == {"Apollo 11", "Artemis III"}
+    assert {h["mission"]["name"] for h in data["items"]} == {"Apollo 11", "Artemis III"}
 
 
 def test_created_mission_is_searchable(client):

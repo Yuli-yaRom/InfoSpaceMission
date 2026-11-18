@@ -1,9 +1,11 @@
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from domain.dtos import RecommendationDTO
 from domain.mission_dtos import (
-    MissionCreateRequest, MissionDTO, MissionFilter, MissionPageDTO, StatsDTO,
+    ExplainDTO, MapReduceResultDTO, MissionCreateRequest, MissionDTO, MissionFilter,
+    MissionPageDTO, RecentQueryDTO, SearchPageDTO, SearchResultDTO, ShardDistributionDTO,
+    StatsDTO,
 )
 
 
@@ -28,10 +30,13 @@ class MissionCommandUseCase(ABC):
 
 
 class MissionSearchUseCase(ABC):
-    """Повнотекстовий пошук (Elasticsearch)."""
+    """П. 15: повнотекстовий пошук (Elasticsearch) з кешем cache-aside (Redis)."""
 
     @abstractmethod
-    async def search(self, text: str, flt: MissionFilter) -> MissionPageDTO: ...
+    async def search(self, text: str, flt: MissionFilter) -> SearchResultDTO: ...
+
+    @abstractmethod
+    async def recent(self, limit: int = 20) -> List[RecentQueryDTO]: ...
 
 
 class GetRecommendationsUseCase(ABC):
@@ -41,9 +46,26 @@ class GetRecommendationsUseCase(ABC):
     async def recommend(self, mission_id: str, limit: int = 5) -> List[RecommendationDTO]: ...
 
 
+class ShardingUseCase(ABC):
+    """П. 13: розподіл даних по шардах і план виконання запитів."""
+
+    @abstractmethod
+    async def distribution(self) -> ShardDistributionDTO: ...
+
+    @abstractmethod
+    async def explain(self, body: str) -> List[ExplainDTO]: ...
+
+
+class MapReduceUseCase(ABC):
+    """П. 14: власний map-reduce поверх шардів."""
+
+    @abstractmethod
+    async def run(self, job: str) -> MapReduceResultDTO: ...
+
+
 # ---- Вихідні порти ----
 class MissionRepositoryPort(ABC):
-    """Основне сховище — SQL (PostgreSQL)."""
+    """Основне сховище — SQL (PostgreSQL / Citus)."""
 
     @abstractmethod
     async def save(self, mission: MissionDTO) -> None: ...
@@ -60,6 +82,10 @@ class MissionRepositoryPort(ABC):
     @abstractmethod
     async def count(self, flt: Optional[MissionFilter] = None) -> int: ...
 
+    @abstractmethod
+    def iter_batches(self, batch_size: int = 1000) -> AsyncIterator[List[MissionDTO]]:
+        """Усі місії пачками (для переіндексації в Elasticsearch)."""
+
 
 class MissionSearchPort(ABC):
     """Пошуковий індекс — Elasticsearch."""
@@ -68,7 +94,10 @@ class MissionSearchPort(ABC):
     async def index_many(self, missions: List[MissionDTO]) -> None: ...
 
     @abstractmethod
-    async def search(self, text: str, flt: MissionFilter) -> MissionPageDTO: ...
+    async def count(self) -> int: ...
+
+    @abstractmethod
+    async def search(self, text: str, flt: MissionFilter) -> SearchPageDTO: ...
 
     @abstractmethod
     async def find_similar(self, mission: MissionDTO, limit: int) -> List[MissionDTO]: ...
@@ -82,6 +111,55 @@ class RecommendationCachePort(ABC):
 
     @abstractmethod
     async def put(self, mission_id: str, items: List[RecommendationDTO]) -> None: ...
+
+
+class SearchCachePort(ABC):
+    """Кеш результатів пошуку — Redis, ключ search:<hash>, TTL."""
+
+    @abstractmethod
+    async def get(self, key: str) -> Optional[SearchPageDTO]: ...
+
+    @abstractmethod
+    async def put(self, key: str, page: SearchPageDTO, ttl_seconds: int) -> None: ...
+
+
+class RecentQueriesPort(ABC):
+    """Список останніх запитів — Redis LPUSH + LTRIM."""
+
+    @abstractmethod
+    async def push(self, entry: RecentQueryDTO, keep: int = 20) -> None: ...
+
+    @abstractmethod
+    async def list(self, limit: int = 20) -> List[RecentQueryDTO]: ...
+
+
+class ShardingInfoPort(ABC):
+    @abstractmethod
+    async def distribution(self) -> ShardDistributionDTO: ...
+
+    @abstractmethod
+    async def explain(self, body: str) -> List[ExplainDTO]: ...
+
+
+class ShardMapPort(ABC):
+    """Прямий доступ до вузлів-шардів в обхід координатора (для map-фази).
+
+    Часткові результати (partial) мають форму, яку очікує MapReduceService:
+      decades: {decade: [total, completed, failed]}
+      terms:   {body: {term: count}}
+    """
+
+    @abstractmethod
+    async def placements(self) -> Dict[str, List[str]]:
+        """Вузол -> активні таблиці-шарди на ньому (лише активні розміщення)."""
+
+    @abstractmethod
+    async def run_map(self, node: str, shard_tables: List[str], job: str) -> Tuple[int, Any]:
+        """Повертає (кількість рядків, частковий результат) для шардів одного вузла."""
+
+    @abstractmethod
+    async def run_on_coordinator(self, job: str) -> Any:
+        """Та сама агрегація через координатор (для перевірки результату)."""
 
 
 class GeneratorControlPort(ABC):

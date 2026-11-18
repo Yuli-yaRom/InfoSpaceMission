@@ -1,15 +1,19 @@
 import logging
+import time
 import uuid
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from application.mission_ports import (
     GetRecommendationsUseCase, MissionCommandUseCase, MissionQueryUseCase,
     MissionRepositoryPort, MissionSearchPort, MissionSearchUseCase,
-    RecommendationCachePort,
+    RecentQueriesPort, RecommendationCachePort, SearchCachePort,
 )
+from application.search_normalization import active_filters, cache_key
 from domain.dtos import RecommendationDTO
 from domain.mission_dtos import (
-    MissionCreateRequest, MissionDTO, MissionFilter, MissionPageDTO, StatsDTO,
+    MissionCreateRequest, MissionDTO, MissionFilter, MissionPageDTO, RecentQueryDTO,
+    SearchPageDTO, SearchResultDTO, StatsDTO,
 )
 
 log = logging.getLogger(__name__)
@@ -57,11 +61,50 @@ class MissionCommandService(MissionCommandUseCase):
 
 
 class MissionSearchService(MissionSearchUseCase):
-    def __init__(self, search: MissionSearchPort):
-        self._search = search
+    """Cache-aside (п. 15): Redis search:<hash> -> (промах) -> Elasticsearch -> Redis з TTL.
+    Кожен запит також потрапляє в список останніх запитів (LPUSH + LTRIM)."""
 
-    async def search(self, text: str, flt: MissionFilter) -> MissionPageDTO:
-        return await self._search.search(text, flt)
+    def __init__(self, search: MissionSearchPort, cache: SearchCachePort,
+                 recent: RecentQueriesPort, ttl_seconds: int = 300, keep_recent: int = 20):
+        self._search = search
+        self._cache = cache
+        self._recent = recent
+        self._ttl = ttl_seconds
+        self._keep = keep_recent
+
+    async def search(self, text: str, flt: MissionFilter) -> SearchResultDTO:
+        started = time.perf_counter()
+        key = cache_key(text, flt)
+        page: Optional[SearchPageDTO] = None
+        try:
+            page = await self._cache.get(key)
+        except Exception:
+            log.warning("Redis недоступний, шукаємо без кешу", exc_info=True)
+        status = "HIT" if page is not None else "MISS"
+        if page is None:
+            page = await self._search.search(text, flt)
+            try:
+                await self._cache.put(key, page, self._ttl)
+            except Exception:
+                log.warning("Не вдалося записати результат пошуку в Redis", exc_info=True)
+        took_ms = round((time.perf_counter() - started) * 1000, 2)
+
+        entry = RecentQueryDTO(query=text.strip(), filters=active_filters(flt), total=page.total,
+                               status="Знайдено" if page.total else "Пусто", cache=status,
+                               at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        try:
+            await self._recent.push(entry, self._keep)
+        except Exception:
+            log.warning("Не вдалося оновити список останніх запитів", exc_info=True)
+
+        return SearchResultDTO(query=text, total=page.total, items=page.items, cache=status, took_ms=took_ms)
+
+    async def recent(self, limit: int = 20) -> List[RecentQueryDTO]:
+        try:
+            return await self._recent.list(limit)
+        except Exception:
+            log.warning("Redis недоступний, список останніх запитів порожній", exc_info=True)
+            return []
 
 
 def _similarity_reason(src: MissionDTO, other: MissionDTO) -> str:

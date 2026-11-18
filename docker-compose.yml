@@ -1,22 +1,55 @@
+# Топологія БД (п. 13): застосунок -> координатор Citus -> 3 воркери-шарди.
+# Застосунок підключається ТІЛЬКИ до координатора (аналог mongos); воркери не публікуються назовні.
+# Map-reduce (п. 14) навмисно підключається до воркерів напряму всередині мережі compose.
+
+x-citus-worker: &citus-worker
+  image: citusdata/citus:12.1
+  environment:
+    POSTGRES_USER: space
+    POSTGRES_PASSWORD: space
+    POSTGRES_DB: space
+    # Довіра лише всередині мережі compose: координатор підключається до воркерів без пароля.
+    # Порти воркерів назовні не відкриваються.
+    POSTGRES_HOST_AUTH_METHOD: trust
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U space -d space"]
+    interval: 5s
+    timeout: 3s
+    retries: 30
+
 services:
-  # 1. Основне сховище (PostgreSQL)
-  postgres:
-    image: postgres:16-alpine
+  # 1. Координатор Citus — точка входу для застосунку, зберігає метадані кластера (pg_dist_*)
+  citus-coordinator:
+    image: citusdata/citus:12.1
     environment:
       POSTGRES_USER: space
       POSTGRES_PASSWORD: space
       POSTGRES_DB: space
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - citus_coordinator:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U space -d space"]
       interval: 5s
       timeout: 3s
-      retries: 20
+      retries: 30
 
-  # 2. Пошуковий рушій (Elasticsearch): повнотекстовий пошук і схожі місії
+  # 2–4. Воркери (шарди)
+  citus-worker-1:
+    <<: *citus-worker
+    volumes:
+      - citus_worker1:/var/lib/postgresql/data
+  citus-worker-2:
+    <<: *citus-worker
+    volumes:
+      - citus_worker2:/var/lib/postgresql/data
+  citus-worker-3:
+    <<: *citus-worker
+    volumes:
+      - citus_worker3:/var/lib/postgresql/data
+
+  # 5. Пошуковий рушій (Elasticsearch): повнотекстовий пошук і схожі місії
   elasticsearch:
     image: elasticsearch:8.11.1
     environment:
@@ -33,7 +66,7 @@ services:
       timeout: 5s
       retries: 30
 
-  # 3. In-memory кеш (Redis): кеш рекомендацій
+  # 6. In-memory кеш (Redis): кеш пошуку й рекомендацій, список останніх запитів
   redis:
     image: redis:7-alpine
     ports:
@@ -46,26 +79,32 @@ services:
       timeout: 3s
       retries: 20
 
-  # 4. Головний додаток (FastAPI + UI на http://localhost:8000)
+  # 7. Головний додаток (FastAPI + UI на http://localhost:8000)
   app:
     build: .
     depends_on:
-      postgres:
-        condition: service_healthy
-      elasticsearch:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      citus-coordinator: { condition: service_healthy }
+      citus-worker-1: { condition: service_healthy }
+      citus-worker-2: { condition: service_healthy }
+      citus-worker-3: { condition: service_healthy }
+      elasticsearch: { condition: service_healthy }
+      redis: { condition: service_healthy }
     environment:
-      DATABASE_URL: postgresql+asyncpg://space:space@postgres:5432/space
+      DATABASE_URL: postgresql+asyncpg://space:space@citus-coordinator:5432/space
+      CITUS_COORDINATOR_HOST: citus-coordinator
+      CITUS_WORKERS: citus-worker-1:5432,citus-worker-2:5432,citus-worker-3:5432
       ES_URL: http://elasticsearch:9200
       REDIS_URL: redis://redis:6379/0
+      SEARCH_CACHE_TTL: "300"
     ports:
       - "8000:8000"
     volumes:
       - ./logs:/app/logs
 
 volumes:
-  pgdata:
+  citus_coordinator:
+  citus_worker1:
+  citus_worker2:
+  citus_worker3:
   esdata:
   redisdata:
