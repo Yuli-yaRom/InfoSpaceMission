@@ -1,10 +1,12 @@
-from typing import Optional
+from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from application.mission_ports import (
-    GeneratorControlPort, MissionCommandUseCase, MissionQueryUseCase,
+    GeneratorControlPort, GetRecommendationsUseCase, MissionCommandUseCase,
+    MissionQueryUseCase, MissionSearchUseCase,
 )
+from domain.dtos import RecommendationDTO
 from domain.mission_dtos import (
     GeneratorRateDTO, MissionCreateRequest, MissionDTO, MissionFilter,
     MissionPageDTO, StatsDTO,
@@ -43,6 +45,41 @@ class MissionQueryRestController:
 
     async def get_stats(self) -> StatsDTO:
         return await self._uc.get_stats()
+
+
+class MissionSearchRestController:
+    """Пошук і рекомендації (схема Query, Рис. 3.2):
+    GET /api/search?q=марсохід&body=mars -> Elasticsearch
+    GET /api/missions/{id}/recommendations -> Redis (кеш) / Elasticsearch more_like_this"""
+
+    def __init__(self, search: MissionSearchUseCase, recommendations: GetRecommendationsUseCase):
+        self._search = search
+        self._recs = recommendations
+        self.router = APIRouter(prefix="/api")
+        self.router.add_api_route("/search", self.search, methods=["GET"], response_model=MissionPageDTO)
+        self.router.add_api_route("/missions/{mission_id}/recommendations", self.recommend,
+                                  methods=["GET"], response_model=List[RecommendationDTO])
+
+    async def search(
+        self,
+        q: str = "",
+        body: Optional[str] = None,
+        type: Optional[str] = None,
+        status: Optional[str] = None,
+        year_from: Optional[int] = None,
+        year_to: Optional[int] = None,
+        limit: int = 10,
+        offset: int = 0,
+    ) -> MissionPageDTO:
+        flt = MissionFilter(body=body, type=type, status=status, year_from=year_from,
+                            year_to=year_to, limit=limit, offset=offset)
+        return await self._search.search(q, flt)
+
+    async def recommend(self, mission_id: str, limit: int = Query(5, ge=1, le=20)) -> List[RecommendationDTO]:
+        try:
+            return await self._recs.recommend(mission_id, limit)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Місію не знайдено")
 
 
 class MissionRestController:
