@@ -92,10 +92,12 @@ class MapReduceService(MapReduceUseCase):
         # Розміщення читаємо на початку: лише активні шарди, тож "осиротілі" копії
         # після переміщення шарда не будуть пораховані двічі
         placements = await self._shards.placements()
+        # Один момент зрізу для map і для перевірки — обидва бачать той самий набір рядків
+        cutoff = await self._shards.cutoff()
 
         async def map_node(node: str, tables: List[str]) -> ShardMapResultDTO:
             start = time.perf_counter()
-            rows, partial = await self._shards.run_map(node, tables, job)
+            rows, partial = await self._shards.run_map(node, tables, job, cutoff)
             return ShardMapResultDTO(node=node, shard_tables=tables, rows=rows,
                                      map_ms=_ms(start), partial=partial)
 
@@ -108,7 +110,7 @@ class MapReduceService(MapReduceUseCase):
         reduce_ms = _ms(reduce_start)
 
         coord_start = time.perf_counter()
-        coordinator_result = spec["finalize"](spec["reduce"]([await self._shards.run_on_coordinator(job)]))
+        coordinator_result = spec["finalize"](spec["reduce"]([await self._shards.run_on_coordinator(job, cutoff)]))
         coordinator_ms = _ms(coord_start)
 
         return MapReduceResultDTO(job=job, result=result, per_node=list(per_node), map_ms=map_ms,
@@ -128,3 +130,9 @@ class ShardingService(ShardingUseCase):
         if not _BODY_RE.match(body):
             raise ValueError("Некоректна назва небесного тіла")
         return await self._info.explain(body)
+
+    async def rebalance(self) -> str:
+        return await self._info.rebalance()
+
+    async def rebalance_status(self) -> Dict[str, Any]:
+        return await self._info.rebalance_status()

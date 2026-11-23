@@ -2,6 +2,8 @@
 
 Інформаційна система про космічні місії (FastAPI, гексагональна архітектура).
 Топологія БД, ключ шардування, map-reduce, пошук і кеш — у [docs/db_topology.md](docs/db_topology.md).
+Навантажувальне тестування, видалення даних і відключення шарда без втрати даних — у
+[docs/load_testing.md](docs/load_testing.md); шард на іншому комп'ютері — [docs/multi_host.md](docs/multi_host.md).
 
 ## Сховища
 
@@ -35,6 +37,19 @@ python app.py
 pytest
 ```
 
+## Навантаження й відмовостійкість
+
+| Що | Де |
+|---|---|
+| Генератор: N рядків/с, «максимум», пауза, пачки через `COPY`, паралельні записувачі | вкладка «Навантаження», `PUT /api/generator` |
+| Швидкість запису в часі, час пачки, розмір БД, CSV | «Навантаження» → графіки, `GET /api/metrics`, `/api/metrics.csv` |
+| Заміри фіксованої тривалості, порівняння топологій | «Навантаження» → «Заміри», `/api/benchmarks` |
+| 1 вузол vs 3 воркери | `docker compose -f docker-compose.single.yml up --build` |
+| Часткове / повне видалення, VACUUM | «Навантаження» → «Видалення даних», `python -m tools.data_admin` |
+| Відключення шарда без втрати даних | вкладка «Відмовостійкість», `./scripts/outage_demo.sh citus-worker-2 60 2000` |
+| Бонус: UPDATE/DELETE під навантаженням | «Генератор» → «Бонус» |
+| Бонус: воркер на іншому комп'ютері | `docker-compose.remote-worker.yml`, «Шардінг» → «Ребалансувати шарди» |
+
 ## API
 
 - `GET  /api/missions?body=&type=&status=&year_from=&year_to=&limit=&offset=` — фільтри (SQL)
@@ -46,4 +61,11 @@ pytest
 - `GET  /api/sharding/distribution` — розподіл рядків по шардах і вузлах
 - `GET  /api/sharding/explain?body=mars` — план: один шард vs усі
 - `GET  /api/mapreduce/decades`, `GET /api/mapreduce/terms` — власний map-reduce по шардах
-- `GET  /api/stats`, `GET/PUT /api/generator` — статистика і швидкість генератора
+- `GET  /api/stats`, `POST /api/stats/recount` — рядків у БД (лічильник / точний count), швидкість, розмір
+- `GET/PUT /api/generator` — стан і налаштування генератора (швидкість, максимум, пауза, модифікації)
+- `GET  /api/metrics?since=`, `GET /api/metrics.csv` — часовий ряд швидкості запису
+- `GET/POST /api/benchmarks`, `GET /api/benchmarks/current`, `POST /api/benchmarks/stop`, `DELETE /api/benchmarks/{id}`
+- `GET  /api/data/preview?<фільтри>`, `DELETE /api/data?<фільтри>`, `DELETE /api/data/all?confirm=yes`,
+  `POST /api/data/vacuum?full=`, `DELETE /api/missions/{id}` — видалення
+- `GET  /api/cluster/health`, `GET /api/cluster/events`, `POST /api/resilience/snapshot`, `POST /api/resilience/check`
+- `GET/POST /api/sharding/rebalance` — ребалансування шардів (після додавання вузла)

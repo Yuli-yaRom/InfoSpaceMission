@@ -67,6 +67,24 @@ async def setup_citus(coordinator: PgConn, coordinator_host: str, workers: List[
 
         if not await conn.fetchval("SELECT count(*) FROM pg_dist_node WHERE groupid = 0"):
             await conn.execute("SELECT citus_set_coordinator_host($1, $2)", coordinator_host, coordinator.port)
+        if not workers:
+            # Один вузол (docker-compose.single.yml): шарди зберігає сам координатор —
+            # той самий Citus і ті самі 12 шардів, лише без розподілу по машинах. Так порівняння
+            # «1 вузол vs 3 воркери» відрізняється тільки кількістю вузлів
+            await conn.execute("SELECT citus_set_node_property($1, $2, 'shouldhaveshards', true)",
+                               coordinator_host, coordinator.port)
+            log.info("Citus: режим одного вузла — шарди на координаторі")
+        # Пароль для з'єднань координатора з воркерами (nodeid 0 — для всіх вузлів). Локальним
+        # воркерам у compose він не потрібен (trust у мережі compose), а воркеру на іншому комп'ютері
+        # (docs/multi_host.md) — потрібен, бо там вхід лише за паролем
+        try:
+            if not await conn.fetchval("SELECT count(*) FROM pg_dist_authinfo WHERE nodeid = 0 AND rolename = $1",
+                                       coordinator.user):
+                await conn.execute("INSERT INTO pg_dist_authinfo (nodeid, rolename, authinfo) VALUES (0, $1, $2)",
+                                   coordinator.user, f"password={coordinator.password}")
+        except Exception as e:  # noqa: BLE001
+            log.warning("Citus: не вдалося записати pg_dist_authinfo: %s", e)
+
         for host, port in workers:
             exists = await conn.fetchval(
                 "SELECT count(*) FROM pg_dist_node WHERE nodename = $1 AND nodeport = $2", host, port)

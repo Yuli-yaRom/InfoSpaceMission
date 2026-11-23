@@ -10,6 +10,7 @@ from application.mission_ports import (
     RecentQueriesPort, RecommendationCachePort, SearchCachePort,
 )
 from application.search_normalization import active_filters, cache_key
+from application.write_ledger import WriteLedger
 from domain.dtos import RecommendationDTO
 from domain.mission_dtos import (
     MissionCreateRequest, MissionDTO, MissionFilter, MissionPageDTO, RecentQueryDTO,
@@ -37,12 +38,24 @@ class MissionQueryService(MissionQueryUseCase):
         return StatsDTO(total_documents=await self._repo.count())
 
 
-class MissionCommandService(MissionCommandUseCase):
-    """Запис: спочатку SQL (джерело істини), потім індексація в Elasticsearch."""
+class BatchTiming:
+    __slots__ = ("sql_ms", "es_ms")
 
-    def __init__(self, repository: MissionRepositoryPort, search: MissionSearchPort):
+    def __init__(self, sql_ms: float, es_ms: Optional[float]):
+        self.sql_ms = sql_ms
+        self.es_ms = es_ms
+
+
+class MissionCommandService(MissionCommandUseCase):
+    """Запис: спочатку SQL (джерело істини), потім індексація в Elasticsearch.
+    Кожна вставка й видалення враховується в WriteLedger (див. application/write_ledger.py)."""
+
+    def __init__(self, repository: MissionRepositoryPort, search: MissionSearchPort,
+                 ledger: Optional[WriteLedger] = None):
         self._repo = repository
         self._search = search
+        self.ledger = ledger or WriteLedger()
+        self.es_failures = 0
 
     async def create_mission(self, request: MissionCreateRequest) -> MissionDTO:
         return (await self.create_missions([request]))[0]
@@ -52,12 +65,61 @@ class MissionCommandService(MissionCommandUseCase):
         if not missions:
             return missions
         await self._repo.save_many(missions)
+        self.ledger.add_inserted(len(missions))
+        await self._index(missions)
+        return missions
+
+    async def _index(self, missions: List[MissionDTO]) -> None:
         try:
             await self._search.index_many(missions)
         except Exception:
             # SQL уже містить дані; пошуковий індекс можна переіндексувати пізніше
+            self.es_failures += 1
             log.exception("Не вдалося проіндексувати %d місій в Elasticsearch", len(missions))
-        return missions
+
+    # ---- Генератор навантаження ----
+    async def ingest(self, missions: List[MissionDTO], idempotent: bool = False,
+                     index: bool = True) -> BatchTiming:
+        """Масовий запис пачки. Помилка БД прокидається — генератор повторить пачку;
+        помилка Elasticsearch лише рахується (дані вже в основному сховищі)."""
+        start = time.perf_counter()
+        await self._repo.insert_bulk(missions, idempotent=idempotent)
+        sql_ms = (time.perf_counter() - start) * 1000
+        self.ledger.add_inserted(len(missions))
+        es_ms = None
+        if index:
+            start = time.perf_counter()
+            await self._index(missions)
+            es_ms = (time.perf_counter() - start) * 1000
+        return BatchTiming(sql_ms, es_ms)
+
+    async def update_status(self, ids: List[str], status: str, index: bool = True) -> int:
+        n = await self._repo.update_status(ids, status)
+        if index and n:
+            try:
+                await self._search.update_status(ids, status)
+            except Exception:
+                self.es_failures += 1
+        return n
+
+    async def update_status_by_filter(self, flt: MissionFilter, status: str, index: bool = True) -> int:
+        n = await self._repo.update_status_by_filter(flt, status)
+        if index and n:
+            try:
+                await self._search.update_status_by_filter(flt, status)
+            except Exception:
+                self.es_failures += 1
+        return n
+
+    async def delete_ids(self, ids: List[str], index: bool = True) -> int:
+        n = await self._repo.delete_ids(ids)
+        self.ledger.add_deleted(n)
+        if index and n:
+            try:
+                await self._search.delete_ids(ids)
+            except Exception:
+                self.es_failures += 1
+        return n
 
 
 class MissionSearchService(MissionSearchUseCase):

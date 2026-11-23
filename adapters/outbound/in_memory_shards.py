@@ -7,13 +7,13 @@ CitusShardAdapter, але на Python.
 import re
 import zlib
 from collections import Counter, defaultdict
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from adapters.outbound.in_memory_mission_repository import InMemoryMissionRepository
 from adapters.outbound.sql_mission_repository import DISTRIBUTION_COLUMN
-from application.mission_ports import ShardingInfoPort, ShardMapPort
+from application.mission_ports import ClusterHealthPort, ShardingInfoPort, ShardMapPort
 from domain.mission_dtos import (
-    ExplainDTO, MissionDTO, NodeTotalDTO, ShardDistributionDTO, ShardInfoDTO,
+    ExplainDTO, MissionDTO, NodeHealthDTO, NodeTotalDTO, ShardDistributionDTO, ShardInfoDTO,
 )
 
 SHARD_COUNT = 12
@@ -54,9 +54,17 @@ def map_terms(rows: Iterable[MissionDTO]) -> Dict[str, Dict[str, int]]:
 _MAPPERS = {"decades": map_decades, "terms": map_terms}
 
 
-class InMemoryShardCluster(ShardingInfoPort, ShardMapPort):
+class InMemoryShardCluster(ShardingInfoPort, ShardMapPort, ClusterHealthPort):
     def __init__(self, repo: InMemoryMissionRepository):
         self._repo = repo
+        self.down: set = set()   # для тестів: «вимкнені» вузли
+
+    async def health(self) -> List[NodeHealthDTO]:
+        per_node = SHARD_COUNT // len(NODES)
+        return [NodeHealthDTO(node="in-memory-coordinator", role="coordinator", up=True, latency_ms=0.0)] + [
+            NodeHealthDTO(node=n, role="worker", up=n not in self.down, latency_ms=None if n in self.down else 0.0,
+                          shards=per_node, error="імітація відмови" if n in self.down else None)
+            for n in NODES]
 
     def _by_shard(self) -> Dict[int, List[MissionDTO]]:
         out: Dict[int, List[MissionDTO]] = {i: [] for i in range(SHARD_COUNT)}
@@ -92,6 +100,12 @@ class InMemoryShardCluster(ShardingInfoPort, ShardMapPort):
                 task_count=1, plan=f"In-memory імітація: шард {_table(_shard_index(any_m.id))}"))
         return out
 
+    async def rebalance(self) -> str:
+        return "У пам'яті вузли фіксовані — переносити нічого"
+
+    async def rebalance_status(self) -> Dict[str, Any]:
+        return {"state": "немає задач"}
+
     # ---- ShardMapPort ----
     async def placements(self) -> Dict[str, List[str]]:
         out: Dict[str, List[str]] = {n: [] for n in NODES}
@@ -99,11 +113,16 @@ class InMemoryShardCluster(ShardingInfoPort, ShardMapPort):
             out[_node_of(i)].append(_table(i))
         return out
 
-    async def run_map(self, node: str, shard_tables: List[str], job: str) -> Tuple[int, Any]:
+    async def cutoff(self) -> Optional[Any]:
+        # У пам'яті map-фаза не віддає керування циклу подій, тож дані не змінюються посеред задачі
+        return None
+
+    async def run_map(self, node: str, shard_tables: List[str], job: str,
+                      cutoff: Optional[Any] = None) -> Tuple[int, Any]:
         by_shard = self._by_shard()
         wanted = {int(t.rsplit("_", 1)[1]) - _FIRST_SHARD_ID for t in shard_tables}
         rows = [m for i in wanted for m in by_shard[i]]
         return len(rows), _MAPPERS[job](rows)
 
-    async def run_on_coordinator(self, job: str) -> Any:
+    async def run_on_coordinator(self, job: str, cutoff: Optional[Any] = None) -> Any:
         return _MAPPERS[job](self._repo.all())

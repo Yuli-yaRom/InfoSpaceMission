@@ -47,7 +47,11 @@ def test_get_missing_returns_404(client):
     assert client.get("/api/missions/nope").status_code == 404
 
 
-def test_generator_rate(client):
-    assert client.put("/api/generator", json={"docs_per_second": 500}).status_code == 200
-    assert client.get("/api/generator").json()["docs_per_second"] == 500
-    assert client.put("/api/generator", json={"docs_per_second": 1}).status_code == 422
+def test_generator_settings(client):
+    res = client.put("/api/generator", json={"docs_per_second": 500, "batch_size": 2000})
+    assert res.status_code == 200
+    st = client.get("/api/generator").json()
+    assert st["settings"]["docs_per_second"] == 500 and st["settings"]["batch_size"] == 2000
+    assert client.put("/api/generator", json={"docs_per_second": 0}).status_code == 200  # пауза
+    assert client.get("/api/generator").json()["state"] == "paused"
+    assert client.put("/api/generator", json={"docs_per_second": -1}).status_code == 422
