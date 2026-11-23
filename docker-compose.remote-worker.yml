@@ -1,0 +1,27 @@
+# Бонус: воркер Citus на ІНШОМУ комп'ютері (ноутбук учасника команди в тій самій мережі).
+# Запуск на тому комп'ютері:   docker compose -f docker-compose.remote-worker.yml up -d
+# Далі на головному комп'ютері: REMOTE_WORKERS=,<IP цього комп'ютера>:5433 docker compose up -d
+# і кнопка «Ребалансувати шарди» на вкладці «Шардінг». Покроково — docs/multi_host.md.
+name: infospace-remote-worker
+
+services:
+  citus-worker-remote:
+    image: citusdata/citus:12.1
+    environment:
+      POSTGRES_USER: space
+      # Вхід лише за паролем (не trust): порт відкритий у локальну мережу.
+      # Координатор передає пароль через pg_dist_authinfo (див. adapters/outbound/citus_cluster.py)
+      POSTGRES_PASSWORD: space
+      POSTGRES_DB: space
+    ports:
+      - "5433:5432"
+    volumes:
+      - citus_remote:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U space -d space"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  citus_remote:

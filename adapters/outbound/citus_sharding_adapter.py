@@ -4,7 +4,9 @@
 * explain()      — аналог explain(): "Task Count: 1" (запит за id, один шард) vs "Task Count: 12" (усі);
 * placements()/run_map() — пряме підключення до кожного воркера в обхід координатора.
 """
+import asyncio
 import re
+import time
 from collections import Counter, defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -12,8 +14,10 @@ import asyncpg
 
 from adapters.outbound.citus_cluster import PgConn
 from adapters.outbound.sql_mission_repository import DISTRIBUTION_COLUMN
-from application.mission_ports import ShardingInfoPort, ShardMapPort
-from domain.mission_dtos import ExplainDTO, NodeTotalDTO, ShardDistributionDTO, ShardInfoDTO
+from application.mission_ports import ClusterHealthPort, ShardingInfoPort, ShardMapPort
+from domain.mission_dtos import (
+    ExplainDTO, NodeHealthDTO, NodeTotalDTO, ShardDistributionDTO, ShardInfoDTO,
+)
 
 _BODY_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
 _TASK_COUNT_RE = re.compile(r"Task Count:\s*(\d+)")
@@ -51,11 +55,23 @@ def _ident(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
-class CitusShardAdapter(ShardingInfoPort, ShardMapPort):
+_NODES_SQL = """
+    SELECT n.nodename, n.nodeport, n.groupid,
+           (SELECT count(*) FROM pg_dist_placement p JOIN pg_dist_shard s USING (shardid)
+             WHERE p.groupid = n.groupid AND s.logicalrelid = 'missions'::regclass) AS shards
+    FROM pg_dist_node n
+    WHERE n.noderole = 'primary'
+    ORDER BY n.groupid"""
+
+
+class CitusShardAdapter(ShardingInfoPort, ShardMapPort, ClusterHealthPort):
+    HEALTH_TIMEOUT = 2.0
+
     def __init__(self, coordinator: PgConn):
         self._coord = coordinator
         self._pool: Optional[asyncpg.Pool] = None
         self._nodes: Dict[str, Tuple[str, int]] = {}
+        self._known: List[asyncpg.Record] = []   # останній відомий склад кластера
 
     async def _get_pool(self) -> asyncpg.Pool:
         if self._pool is None:
@@ -67,6 +83,44 @@ class CitusShardAdapter(ShardingInfoPort, ShardMapPort):
     async def close(self) -> None:
         if self._pool is not None:
             await self._pool.close()
+
+    # ---------- ClusterHealthPort ----------
+    async def _ping(self, host: str, port: int) -> Tuple[bool, Optional[float], Optional[str]]:
+        start = time.perf_counter()
+        try:
+            conn = await asyncpg.connect(host=host, port=port, user=self._coord.user,
+                                         password=self._coord.password, database=self._coord.database,
+                                         timeout=self.HEALTH_TIMEOUT)
+            try:
+                await conn.fetchval("SELECT 1", timeout=self.HEALTH_TIMEOUT)
+            finally:
+                await conn.close()
+            return True, round((time.perf_counter() - start) * 1000, 1), None
+        except Exception as e:  # noqa: BLE001
+            return False, None, f"{type(e).__name__}: {str(e)[:160]}"
+
+    async def health(self) -> List[NodeHealthDTO]:
+        """Склад кластера — з метаданих координатора; доступність кожного вузла — прямим
+        підключенням (в обхід координатора). Якщо координатор недоступний, беремо останній
+        відомий склад."""
+        c = self._coord
+        coord_up, coord_ms, coord_err = await self._ping(c.host, c.port)
+        if coord_up:
+            try:
+                pool = await self._get_pool()
+                async with pool.acquire() as conn:
+                    self._known = await conn.fetch(_NODES_SQL, timeout=self.HEALTH_TIMEOUT * 2)
+            except Exception as e:  # noqa: BLE001
+                coord_err = f"{type(e).__name__}: {str(e)[:160]}"
+        coord_shards = sum(r["shards"] for r in self._known if r["groupid"] == 0)
+        out = [NodeHealthDTO(node=f"{c.host}:{c.port}", role="coordinator", up=coord_up, latency_ms=coord_ms,
+                             shards=coord_shards, error=coord_err)]
+        workers = [r for r in self._known if r["groupid"] != 0]
+        pings = await asyncio.gather(*(self._ping(r["nodename"], r["nodeport"]) for r in workers))
+        for r, (up, ms, err) in zip(workers, pings):
+            out.append(NodeHealthDTO(node=f"{r['nodename']}:{r['nodeport']}", role="worker", up=up,
+                                     latency_ms=ms, shards=r["shards"], error=err))
+        return out
 
     # ---------- ShardingInfoPort ----------
     async def distribution(self) -> ShardDistributionDTO:
@@ -111,6 +165,22 @@ class CitusShardAdapter(ShardingInfoPort, ShardMapPort):
                 m = _TASK_COUNT_RE.search(plan)
                 out.append(ExplainDTO(label=label, sql=sql, task_count=int(m.group(1)) if m else None, plan=plan))
         return out
+
+    async def rebalance(self) -> str:
+        """Фонове перенесення шардів на вузли з меншою кількістю (Citus 11.1+).
+        block_writes: на час копіювання шарда запис у нього блокується (генератор почекає й повторить),
+        зате не потрібен wal_level=logical."""
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            job = await conn.fetchval("SELECT citus_rebalance_start(shard_transfer_mode := 'block_writes')")
+        return f"Ребалансування запущено (job {job})" if job else "Шарди вже розподілені рівномірно"
+
+    async def rebalance_status(self) -> Dict[str, Any]:
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT job_id, state, started_at, finished_at, details::text AS details "
+                                      "FROM citus_rebalance_status() ORDER BY job_id DESC LIMIT 1")
+        return dict(row) if row else {"state": "немає задач"}
 
     # ---------- ShardMapPort ----------
     async def placements(self) -> Dict[str, List[str]]:

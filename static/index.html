@@ -5,9 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>InfoSpaceMission</title>
 <style>
-  :root { --bg:#f5f6f8; --card:#fff; --text:#1c2230; --muted:#6a7385; --line:#dfe3ea; --accent:#2f5bea; --err:#c0392b; }
+  :root { --bg:#f5f6f8; --card:#fff; --text:#1c2230; --muted:#6a7385; --line:#dfe3ea; --accent:#2f5bea; --err:#c0392b;
+          --good:#1f9d55; --warn:#b26a00;
+          /* серії графіків — перевірена категоріальна палітра (світла тема) */
+          --series-1:#2a78d6; --series-2:#eb6834; --series-3:#1baf7a; --series-4:#eda100;
+          --series-5:#e87ba4; --series-6:#008300; --series-7:#6250d6; --series-8:#e34948; }
   @media (prefers-color-scheme: dark) {
-    :root { --bg:#12151c; --card:#1b2029; --text:#e6e9f0; --muted:#98a1b3; --line:#2b3240; --accent:#6c8cff; --err:#ff7b6b; }
+    :root { --bg:#12151c; --card:#1b2029; --text:#e6e9f0; --muted:#98a1b3; --line:#2b3240; --accent:#6c8cff; --err:#ff7b6b;
+            --good:#3ecf7d; --warn:#f0a040;
+            --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70; --series-4:#c98500;
+            --series-5:#d55181; --series-6:#0ca30c; --series-7:#9085e9; --series-8:#e66767; }
   }
   * { box-sizing: border-box; }
   body { margin:0; font:15px/1.4 system-ui,sans-serif; background:var(--bg); color:var(--text); }
@@ -63,17 +70,56 @@
   .grid-2 { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:10px; }
   td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
   table.static tbody tr { cursor:default; }
+  /* ---- Навантаження / відмовостійкість ---- */
+  .state { display:inline-flex; align-items:center; gap:5px; padding:2px 9px; border-radius:10px; font-size:12px; font-weight:600; }
+  .state::before { content:''; width:7px; height:7px; border-radius:50%; background:currentColor; }
+  .state.running, .state.up { color:var(--good); background:color-mix(in srgb, var(--good) 14%, transparent); }
+  .state.paused { color:var(--muted); background:var(--line); }
+  .state.retrying, .state.down { color:var(--err); background:color-mix(in srgb, var(--err) 14%, transparent); }
+  .kv { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:10px; margin:10px 0; }
+  .kv div { background:var(--bg); border-radius:6px; padding:8px 10px; }
+  .kv b { display:block; font-size:18px; font-variant-numeric:tabular-nums; }
+  .kv span { color:var(--muted); font-size:12px; }
+  fieldset { border:1px solid var(--line); border-radius:6px; padding:8px 10px; display:flex; flex-wrap:wrap; gap:8px; align-items:end; margin:0; }
+  legend { color:var(--muted); font-size:12px; padding:0 4px; }
+  label.inline { flex-direction:row; align-items:center; gap:6px; font-size:13px; color:var(--text); }
+  .hint { color:var(--muted); font-size:12px; margin:6px 0 0; }
+  code, .cmd { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
+  .cmd { display:block; background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:6px 8px; margin:4px 0; white-space:pre-wrap; word-break:break-all; }
+  .chart { position:relative; }
+  .chart svg { display:block; width:100%; height:auto; touch-action:none; }
+  .chart .grid { stroke:var(--line); stroke-width:1; }
+  .chart .axis { stroke:var(--muted); stroke-width:1; }
+  .chart .tick { fill:var(--muted); font-size:11px; font-variant-numeric:tabular-nums; }
+  .chart .line { fill:none; stroke-width:2; stroke-linejoin:round; stroke-linecap:round; }
+  .chart .hair { stroke:var(--muted); stroke-width:1; }
+  .chart .dot { stroke:var(--card); stroke-width:2; }
+  .chart-tip { position:absolute; pointer-events:none; background:var(--card); border:1px solid var(--line); border-radius:6px; padding:6px 8px; font-size:12px; box-shadow:0 2px 8px #0002; white-space:nowrap; }
+  .chart-tip .tip-x { color:var(--muted); margin-bottom:2px; }
+  .sw { display:inline-block; width:12px; height:3px; border-radius:2px; margin-right:6px; vertical-align:middle; }
+  .sw.dash { height:0; border-top:2px dashed; }
+  .legend { display:flex; flex-wrap:wrap; gap:4px 14px; font-size:12px; color:var(--muted); margin-top:4px; }
+  .chart-empty { color:var(--muted); text-align:center; padding:50px 0; font-size:13px; }
+  .chart-title { font-size:13px; font-weight:600; margin:14px 0 2px; }
+  .chart-sub { color:var(--muted); font-size:12px; margin:0 0 4px; }
+  .result { margin-top:10px; font-size:13px; }
+  .danger { background:var(--err) !important; }
+  .events { list-style:none; margin:0; padding:0; font-size:13px; max-height:320px; overflow-y:auto; }
+  .events li { padding:6px 0; border-bottom:1px solid var(--line); display:grid; grid-template-columns:70px 1fr; gap:8px; }
+  .events time { color:var(--muted); font-variant-numeric:tabular-nums; }
+  .events .warn { color:var(--err); } .events .ok { color:var(--good); }
+  .steps { margin:6px 0; padding-left:20px; font-size:13px; } .steps li { margin:6px 0; }
+  .big-check { font-size:20px; font-weight:700; }
 </style>
 </head>
 <body>
 <header>
   <h1>InfoSpaceMission</h1>
   <div class="stats">
-    <div class="stat"><b id="stat-total">–</b><span>документів у БД</span></div>
-    <div class="stat"><b id="stat-rate">–</b><span>док/с (з БД)</span></div>
-    <label class="slider">Швидкість генератора: <b id="rate-label">–</b> док/с
-      <input id="rate" type="range" min="10" max="5000" step="10" value="100">
-    </label>
+    <div class="stat"><b id="stat-total">–</b><span>рядків у БД</span></div>
+    <div class="stat"><b id="stat-rate">–</b><span>записано рядків/с</span></div>
+    <div class="stat"><b id="stat-size">–</b><span>розмір БД (усі вузли)</span></div>
+    <div class="stat"><span id="stat-state" class="state paused">–</span><span id="stat-pending">генератор</span></div>
   </div>
 </header>
 
@@ -82,6 +128,8 @@
   <button data-tab="missions" class="active">Місії</button>
   <button data-tab="search">Пошук</button>
   <button data-tab="sharding">Шардінг / Map-Reduce</button>
+  <button data-tab="load">Навантаження</button>
+  <button data-tab="resilience">Відмовостійкість</button>
 </nav>
 
 <main>
@@ -117,7 +165,10 @@
     </div>
 
     <div class="card" id="detail" hidden>
-      <h3 style="margin-top:0" id="detail-title"></h3>
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:center">
+        <h3 style="margin:0" id="detail-title"></h3>
+        <button class="btn secondary" id="detail-delete">Видалити місію</button>
+      </div>
       <dl id="detail-body"></dl>
       <h4 style="margin:14px 0 6px">Схожі місії</h4>
       <ul id="detail-recs" style="margin:0;padding-left:18px"></ul>
@@ -183,7 +234,10 @@
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
         <h3 style="margin:0">Розподіл даних по шардах</h3>
-        <button class="btn secondary" id="dist-refresh">Оновити</button>
+        <div style="display:flex;gap:8px">
+          <button class="btn secondary" id="dist-refresh">Оновити</button>
+          <button class="btn secondary" id="rebalance" title="Перенести частину шардів на нові вузли (напр. воркер на іншому комп'ютері)">Ребалансувати шарди</button>
+        </div>
       </div>
       <p class="search-meta" id="dist-meta" style="margin:6px 0 10px"></p>
       <div id="dist-nodes"></div>
@@ -216,7 +270,175 @@
       <div id="mr-out" style="margin-top:12px"></div>
     </div>
   </section>
+  <section class="page" id="tab-load">
+    <div class="card">
+      <h3 style="margin:0 0 8px">Генератор навантаження</h3>
+      <form id="gen-form" class="row">
+        <fieldset>
+          <legend>Режим запису</legend>
+          <label class="inline"><input type="radio" name="mode" value="pause"> Пауза</label>
+          <label class="inline"><input type="radio" name="mode" value="rate" checked> Фіксована швидкість</label>
+          <label class="inline"><input type="radio" name="mode" value="max"> Максимум (скільки встигає БД)</label>
+          <label>Рядків/с <input name="docs_per_second" type="number" min="1" max="200000" step="100" style="width:110px"></label>
+        </fieldset>
+        <fieldset>
+          <legend>Як пише</legend>
+          <label>Розмір пачки <input name="batch_size" type="number" min="10" max="50000" style="width:90px"></label>
+          <label>Паралельних записувачів <input name="writers" type="number" min="1" max="32" style="width:70px"></label>
+          <label class="inline"><input type="checkbox" name="index_search"> Індексувати в Elasticsearch</label>
+        </fieldset>
+        <fieldset>
+          <legend>Бонус: модифікації під навантаженням</legend>
+          <label>UPDATE за id / с <input name="updates_per_second" type="number" min="0" max="50000" style="width:90px"></label>
+          <label>DELETE за id / с <input name="deletes_per_second" type="number" min="0" max="50000" style="width:90px"></label>
+          <label>Масовий UPDATE кожні, с <input name="bulk_update_every_s" type="number" min="0" max="3600" style="width:80px"></label>
+        </fieldset>
+        <button class="btn" type="submit">Застосувати</button>
+      </form>
+      <p class="hint">Без Elasticsearch вимірюється чиста швидкість запису в Citus; з ним — увесь шлях запису (кожна пачка ще й індексується).
+        Масовий UPDATE (тіло + рік, без ключа розподілу) координатор розсилає на всі шарди — він помітно гальмує запис.</p>
+      <p class="hint" id="gen-lock" hidden><b>Триває замір</b> — налаштування заблоковані, щоб у результаті були саме ті,
+        з якими вимірювали. Після завершення генератор повернеться до попередніх налаштувань.</p>
+      <div class="kv" id="gen-kv"></div>
+      <div class="error" id="gen-error"></div>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+        <h3 style="margin:0">Швидкість запису в часі</h3>
+        <div class="row" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <label class="inline">Вікно
+            <select id="metrics-window">
+              <option value="300">5 хв</option><option value="1800" selected>30 хв</option>
+              <option value="7200">2 год</option><option value="0">усе</option>
+            </select>
+          </label>
+          <button class="btn secondary" id="recount">Перерахувати рядки (count)</button>
+          <a class="btn secondary" href="/api/metrics.csv" style="text-decoration:none;color:var(--text);padding:7px 14px;border-radius:6px">CSV</a>
+        </div>
+      </div>
+      <div class="chart-title">Записано рядків за секунду</div>
+      <p class="chart-sub">Пунктир — задана швидкість генератора (у режимі «максимум» її немає). Точка кожні 2 с.</p>
+      <div id="chart-rate"></div>
+      <div class="grid-2">
+        <div>
+          <div class="chart-title">Час запису однієї пачки в БД, мс</div>
+          <div id="chart-latency"></div>
+        </div>
+        <div>
+          <div class="chart-title">Розмір таблиці на всіх вузлах (дані + індекси)</div>
+          <div id="chart-size"></div>
+        </div>
+      </div>
+      <p class="hint" id="recount-out"></p>
+    </div>
+
+    <div class="card">
+      <h3 style="margin:0 0 8px">Заміри (для звіту)</h3>
+      <form id="bench-form" class="row">
+        <label>Мітка <input name="label" placeholder="3 воркери, без ES" style="width:180px"></label>
+        <label>Тривалість, хв <input name="minutes" type="number" min="1" max="240" value="30" style="width:80px"></label>
+        <label>Режим
+          <select name="mode"><option value="max">максимум</option><option value="rate">фіксована швидкість</option></select>
+        </label>
+        <label>Рядків/с <input name="docs_per_second" type="number" min="1" max="200000" value="5000" style="width:100px"></label>
+        <button class="btn" type="submit" id="bench-start">Почати замір</button>
+        <button class="btn secondary" type="button" id="bench-stop" hidden>Зупинити</button>
+      </form>
+      <p class="hint">Спершу задайте налаштування генератора (Elasticsearch, пачка, модифікації) — на час заміру вони блокуються.
+        Замір перемикає генератор у заданий режим, а після завершення повертає попередні налаштування.
+        «Перше вікно» рахується після розгону (перші секунди, поки генератор набирає швидкість, пропускаються).
+        Результати зберігаються в <code>logs/benchmarks.jsonl</code> разом із топологією кластера, тож прогони на
+        1 вузлі й на 3 воркерах видно в одній таблиці.</p>
+      <div id="bench-current" class="result"></div>
+      <div class="table-wrap" style="margin-top:10px">
+        <table class="static">
+          <thead><tr><th>На графіку</th><th>Початок</th><th>Мітка</th><th>Топологія</th><th class="num">Тривалість</th>
+            <th class="num">Записано</th><th class="num">Середня, р/с</th><th class="num">Перше вікно</th>
+            <th class="num">Останнє вікно</th><th class="num">Зміна</th><th class="num">p95 пачки</th><th class="num">Розмір</th><th></th></tr></thead>
+          <tbody id="bench-rows"></tbody>
+        </table>
+      </div>
+      <div class="chart-title">Порівняння прогонів: рядків/с від початку заміру</div>
+      <div id="chart-bench"></div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin:0 0 8px">Видалення даних</h3>
+      <form id="del-form" class="row">
+        <label>Тіло <input name="body" placeholder="mars" style="width:100px"></label>
+        <label>Тип
+          <select name="type"><option value="">усі</option><option>ROVER</option><option>ORBITER</option><option>LANDER</option><option>CREWED</option><option>PROBE</option></select>
+        </label>
+        <label>Статус
+          <select name="status"><option value="">усі</option><option>PLANNED</option><option>ACTIVE</option><option>COMPLETED</option><option>FAILED</option></select>
+        </label>
+        <label>Рік від <input name="year_from" type="number" style="width:90px"></label>
+        <label>Рік до <input name="year_to" type="number" style="width:90px"></label>
+        <button class="btn secondary" type="button" id="del-preview">Скільки буде видалено?</button>
+        <button class="btn danger" type="submit" id="del-go" disabled>Видалити</button>
+      </form>
+      <div class="result" id="del-out"></div>
+      <div class="row" style="display:flex;gap:8px;align-items:end;flex-wrap:wrap;margin-top:14px">
+        <label>Повне видалення: введіть <b>ВИДАЛИТИ</b> <input id="del-all-confirm" autocomplete="off" style="width:140px"></label>
+        <button class="btn danger" id="del-all" disabled>Видалити все</button>
+        <button class="btn secondary" id="vacuum">VACUUM</button>
+        <button class="btn secondary" id="vacuum-full">VACUUM FULL</button>
+      </div>
+      <p class="hint">Часткове: <code>DELETE … WHERE</code> у Citus + <code>delete_by_query</code> в Elasticsearch + скидання кешу Redis.
+        Місце на диску після DELETE не зменшується — рядки лише позначаються мертвими; <code>VACUUM</code> дозволяє використати
+        це місце повторно, <code>VACUUM FULL</code> повертає його ОС (але блокує таблицю). Повне: <code>TRUNCATE</code> — місце звільняється одразу.</p>
+      <details><summary style="cursor:pointer;color:var(--muted);font-size:13px">З консолі</summary>
+        <code class="cmd">docker compose exec app python -m tools.data_admin delete --body mars --year-to 1990
+docker compose exec app python -m tools.data_admin delete-all --yes
+docker compose exec app python -m tools.data_admin vacuum [--full]
+docker compose exec citus-coordinator psql -U space -c "TRUNCATE missions"</code>
+      </details>
+    </div>
+  </section>
+
+  <section class="page" id="tab-resilience">
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+        <h3 style="margin:0">Вузли кластера</h3>
+        <span class="hint" style="margin:0">оновлюється кожні 2 с · пряме підключення до кожного вузла</span>
+      </div>
+      <div class="table-wrap">
+        <table class="static">
+          <thead><tr><th>Вузол</th><th>Роль</th><th>Стан</th><th class="num">Відгук</th><th class="num">Шардів</th><th>З якого часу</th><th>Помилка</th></tr></thead>
+          <tbody id="nodes-rows"></tbody>
+        </table>
+      </div>
+      <div class="kv" id="res-gen"></div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin:0 0 8px">Демонстрація: відключення шарда без втрати даних</h3>
+      <ol class="steps">
+        <li>Увімкніть запис (вкладка «Навантаження», напр. 2000 рядків/с) і натисніть
+          <button class="btn secondary" id="snap">Зафіксувати стан</button></li>
+        <li>Вимкніть вузол: <code class="cmd">docker compose stop citus-worker-2</code>
+          Запис у БД не вдається — пачки лишаються в буфері генератора й повторюються (див. журнал і «У буфері»).
+          Пошук на вкладці «Пошук» працює далі: Elasticsearch — окремий вузол.</li>
+        <li>Через хвилину-дві поверніть вузол: <code class="cmd">docker compose start citus-worker-2</code>
+          Дані вузла лежать на його томі (<code>citus_worker2</code>) і повертаються разом із ним; буфер дописується.</li>
+        <li>Коли «У буфері» = 0, натисніть <button class="btn" id="check">Перевірити</button>
+          Очікувано = рядків у знімку + записано після знімка − видалено після знімка; фактично — <code>count(*)</code>.</li>
+      </ol>
+      <p class="hint">Те саме одним скриптом: <code>./scripts/outage_demo.sh citus-worker-2 60</code></p>
+      <div class="result" id="res-out"></div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin:0 0 8px">Журнал подій</h3>
+      <ul class="events" id="events"></ul>
+    </div>
+  </section>
 </main>
+
+<script src="charts.js"></script>
+<script src="load.js"></script>
+<script src="resilience.js"></script>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -280,6 +502,10 @@ async function showDetail(id) {
     dl.append(dt, dd);
   }
   $('detail').hidden = false;
+  $('detail-delete').onclick = async () => {
+    const res = await fetch('/api/missions/' + encodeURIComponent(id), { method: 'DELETE' });
+    if (res.ok) { $('detail').hidden = true; loadMissions(); refreshStats(); }
+  };
   $('detail').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   loadRecommendations(id);
 }
@@ -322,28 +548,22 @@ $('add-form').addEventListener('submit', async (e) => {
   loadMissions(); refreshStats();
 });
 
-// ---- Статистика раз на секунду ----
-let lastTotal = null;
+// ---- Статистика в шапці (раз на 2 с) ----
+// Кількість рядків — лічильник застосунку (без count(*) щосекунди: на десятках ГБ він сам навантажував би БД)
+const STATE_UA = { running: 'пише', paused: 'пауза', retrying: 'повторює запис' };
 async function refreshStats() {
   try {
     const s = await (await fetch('/api/stats')).json();
-    $('stat-total').textContent = s.total_documents.toLocaleString('uk');
-    if (lastTotal !== null) $('stat-rate').textContent = Math.max(0, s.total_documents - lastTotal).toLocaleString('uk');
-    lastTotal = s.total_documents;
+    // Поки не завершився перший точний count(*) (на великій таблиці — хвилини), число неповне
+    $('stat-total').textContent = s.counted_at ? s.total_documents.toLocaleString('uk') : 'рахується…';
+    $('stat-total').title = s.counting ? 'Іде точний підрахунок (count) — запис при цьому не зупиняється' : '';
+    $('stat-rate').textContent = Math.round(s.insert_rate).toLocaleString('uk');
+    $('stat-size').textContent = Charts.fmtBytes(s.db_size_bytes);
+    const st = $('stat-state'); st.className = 'state ' + s.generator_state; st.textContent = STATE_UA[s.generator_state] || s.generator_state;
+    $('stat-pending').textContent = s.pending ? `у буфері ${s.pending.toLocaleString('uk')}` : 'генератор';
   } catch (_) {}
 }
-setInterval(refreshStats, 1000);
-
-// ---- Слайдер генератора ----
-$('rate').addEventListener('input', () => $('rate-label').textContent = $('rate').value);
-$('rate').addEventListener('change', () =>
-  fetch('/api/generator', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ docs_per_second: Number($('rate').value) }) }));
-(async () => {
-  try {
-    const r = await (await fetch('/api/generator')).json();
-    $('rate').value = r.docs_per_second; $('rate-label').textContent = r.docs_per_second;
-  } catch (_) {}
-})();
+setInterval(refreshStats, 2000);
 
 loadMissions(); refreshStats();
 // ================= Пошук (п. 15): Elasticsearch + кеш Redis =================
@@ -464,6 +684,14 @@ async function loadDistribution() {
   } catch (_) { $('dist-meta').textContent = 'Шардінг недоступний (потрібен Citus або запуск без DATABASE_URL)'; }
 }
 $('dist-refresh').addEventListener('click', loadDistribution);
+$('rebalance').addEventListener('click', async () => {
+  const meta = $('dist-meta');
+  try {
+    const res = await fetch('/api/sharding/rebalance', { method: 'POST' });
+    const r = await res.json();
+    meta.textContent = res.ok ? r.message + ' — натискайте «Оновити», щоб бачити, як шарди переїжджають' : (r.detail || 'Помилка');
+  } catch (_) { meta.textContent = 'Не вдалося запустити ребалансування'; }
+});
 
 $('explain-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -491,6 +719,7 @@ $('mr-form').addEventListener('submit', async (e) => {
     check.append(el('span', { class: r.match ? 'ok' : 'bad' }, r.match ? '✓ збігається з агрегацією через координатор' : '✗ не збігається з координатором'),
       el('span', {}, `· map (паралельно): ${r.map_ms} мс · reduce: ${r.reduce_ms} мс · координатор: ${r.coordinator_ms} мс`));
     out.appendChild(check);
+    if (!r.match) out.appendChild(el('p', { class: 'hint' }, 'Розбіжність очікувана, якщо генератор зараз виконує UPDATE/DELETE: зріз за часом вставки фіксує лише нові рядки, а оновлення й видалення змінюють уже наявні між map-фазою і перевіркою. Вимкніть модифікації й запустіть ще раз.'));
 
     out.appendChild(el('h4', { style: 'margin:10px 0 4px' }, 'Внесок кожного шарда (вузла) і час map'));
     const contrib = el('div'); out.appendChild(contrib);

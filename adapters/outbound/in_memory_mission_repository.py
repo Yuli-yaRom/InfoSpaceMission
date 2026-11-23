@@ -55,6 +55,44 @@ class InMemoryMissionRepository(MissionRepositoryPort):
         for i in range(0, len(items), batch_size):
             yield items[i:i + batch_size]
 
+    async def insert_bulk(self, missions: List[MissionDTO], idempotent: bool = False) -> None:
+        for m in missions:
+            if m.id in self._items and not idempotent:
+                raise ValueError(f"duplicate key id={m.id}")
+            self._items.setdefault(m.id, m)
+
+    async def update_status(self, ids: List[str], status: str) -> int:
+        n = 0
+        for i in ids:
+            if i in self._items:
+                self._items[i] = self._items[i].model_copy(update={"status": status})
+                n += 1
+        return n
+
+    async def update_status_by_filter(self, flt: MissionFilter, status: str) -> int:
+        return await self.update_status([m.id for m in self._items.values() if _match(m, flt)], status)
+
+    async def delete_ids(self, ids: List[str]) -> int:
+        return sum(self._items.pop(i, None) is not None for i in ids)
+
+    async def delete_by_filter(self, flt: MissionFilter) -> int:
+        return await self.delete_ids([m.id for m in self._items.values() if _match(m, flt)])
+
+    async def delete_all(self) -> None:
+        self._items.clear()
+
+    async def storage_bytes(self) -> Optional[int]:
+        return None  # у пам'яті розмір на диску не має сенсу
+
+    async def vacuum(self, full: bool = False) -> None:
+        return None
+
+    async def db_now(self) -> None:
+        return None  # у пам'яті немає created_at — рахуємо під короткою паузою запису
+
+    async def count_created_before(self, moment) -> int:
+        return len(self._items)
+
 
 def _highlight(text: str, words: List[str]) -> Optional[str]:
     """Як ES з encoder: html — спершу екранування, потім <mark> навколо збігів."""
@@ -102,6 +140,25 @@ class InMemoryMissionSearch(MissionSearchPort):
         scored.sort(key=lambda x: (-x[0], x[1].name))
         return [m for _, m in scored[:limit]]
 
+    async def update_status(self, ids: List[str], status: str) -> None:
+        for i in ids:
+            if i in self._items:
+                self._items[i] = self._items[i].model_copy(update={"status": status})
+
+    async def update_status_by_filter(self, flt: MissionFilter, status: str) -> None:
+        await self.update_status([m.id for m in self._items.values() if _match(m, flt)], status)
+
+    async def delete_ids(self, ids: List[str]) -> None:
+        for i in ids:
+            self._items.pop(i, None)
+
+    async def delete_by_filter(self, flt: MissionFilter) -> str:
+        await self.delete_ids([m.id for m in self._items.values() if _match(m, flt)])
+        return "Пошуковий індекс (у пам'яті) оновлено"
+
+    async def clear(self) -> None:
+        self._items.clear()
+
 
 class InMemoryRecommendationCache(RecommendationCachePort):
     def __init__(self):
@@ -112,6 +169,11 @@ class InMemoryRecommendationCache(RecommendationCachePort):
 
     async def put(self, mission_id: str, items: List[RecommendationDTO]) -> None:
         self._data[mission_id] = items
+
+    async def clear(self) -> int:
+        n = len(self._data)
+        self._data.clear()
+        return n
 
 
 class InMemorySearchCache(SearchCachePort):
@@ -126,6 +188,11 @@ class InMemorySearchCache(SearchCachePort):
 
     async def put(self, key: str, page: SearchPageDTO, ttl_seconds: int) -> None:
         self._data[key] = page.model_dump_json()
+
+    async def clear(self) -> int:
+        n = len(self._data)
+        self._data.clear()
+        return n
 
 
 class InMemoryRecentQueries(RecentQueriesPort):

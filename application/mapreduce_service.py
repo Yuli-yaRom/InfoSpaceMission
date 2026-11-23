@@ -130,3 +130,9 @@ class ShardingService(ShardingUseCase):
         if not _BODY_RE.match(body):
             raise ValueError("Некоректна назва небесного тіла")
         return await self._info.explain(body)
+
+    async def rebalance(self) -> str:
+        return await self._info.rebalance()
+
+    async def rebalance_status(self) -> Dict[str, Any]:
+        return await self._info.rebalance_status()

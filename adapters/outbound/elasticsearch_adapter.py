@@ -109,3 +109,34 @@ class ElasticsearchMissionSearchAdapter(MissionSearchPort):
                 "must_not": [{"ids": {"values": [mission.id]}}],
             }})
         return [self._to_dto(h) for h in res["hits"]["hits"]]
+
+    # ---------- Модифікації та видалення ----------
+    async def update_status(self, ids: List[str], status: str) -> None:
+        actions = ({"_op_type": "update", "_index": self._index, "_id": i, "doc": {"status": status}}
+                   for i in ids)
+        # Документ міг бути вже видалений — такі помилки (404) не зупиняють решту пачки
+        await async_bulk(self._es, actions, raise_on_error=False)
+
+    def _filter_query(self, flt: MissionFilter) -> Dict[str, Any]:
+        return {"bool": {"filter": self._filters(flt)}}
+
+    async def update_status_by_filter(self, flt: MissionFilter, status: str) -> None:
+        await self._es.update_by_query(
+            index=self._index, query=self._filter_query(flt), conflicts="proceed",
+            wait_for_completion=False,
+            script={"source": "ctx._source.status = params.s", "params": {"s": status}})
+
+    async def delete_ids(self, ids: List[str]) -> None:
+        actions = ({"_op_type": "delete", "_index": self._index, "_id": i} for i in ids)
+        await async_bulk(self._es, actions, raise_on_error=False)
+
+    async def delete_by_filter(self, flt: MissionFilter) -> str:
+        # Мільйони документів видаляються довго — запускаємо задачу у фоні й не тримаємо HTTP-запит
+        res = await self._es.delete_by_query(
+            index=self._index, query=self._filter_query(flt), conflicts="proceed",
+            wait_for_completion=False, slices="auto")
+        return f"Elasticsearch: видалення виконується у фоні (задача {res.get('task')})"
+
+    async def clear(self) -> None:
+        await self._es.indices.delete(index=self._index, ignore_unavailable=True)
+        await self.init_index()

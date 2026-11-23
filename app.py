@@ -5,6 +5,10 @@
   CITUS_WORKERS  -> "host:port,..." воркерів Citus (п. 13–14)          інакше — імітація кластера
   ES_URL         -> Elasticsearch (пошук, схожі місії)                 інакше — у пам'яті
   REDIS_URL      -> Redis (кеш пошуку й рекомендацій, останні запити)  інакше — у пам'яті
+  CITUS_SINGLE_NODE=1 -> Citus без воркерів: шарди на координаторі (порівняння «1 вузол vs 3»)
+  TOPOLOGY_NAME  -> підпис топології в результатах замірів (напр. "3 воркери")
+  BENCHMARK_FILE -> файл результатів замірів (спільний для всіх топологій)  інакше — у пам'яті
+  GENERATOR_RATE, GENERATOR_BUFFER -> початкова швидкість генератора і розмір буфера (рядків)
 """
 import asyncio
 import logging
@@ -17,21 +21,32 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from adapters.inbound.rest_api import (
-    GeneratorControlRestController, MissionQueryRestController, MissionRestController,
-    MissionSearchRestController, ShardingRestController,
+    BenchmarkRestController, DataAdminRestController, GeneratorControlRestController,
+    MetricsRestController, MissionQueryRestController, MissionRestController,
+    MissionSearchRestController, ResilienceRestController, ShardingRestController,
 )
+from adapters.outbound.benchmark_store import make_store
 from adapters.outbound.fake_generator import FakeGeneratorAdapter
 from adapters.outbound.in_memory_mission_repository import (
     InMemoryMissionRepository, InMemoryMissionSearch, InMemoryRecentQueries,
     InMemoryRecommendationCache, InMemorySearchCache,
 )
 from adapters.outbound.seed_data import seed_requests
+from application.benchmark_service import BenchmarkService
+from application.data_admin_service import DataAdminService
+from application.load_metrics import MetricsRecorder
 from application.mapreduce_service import MapReduceService, ShardingService
+from application.mission_ports import ClusterHealthPort
 from application.mission_services import (
     MissionCommandService, MissionQueryService, MissionSearchService, RecommendationService,
 )
+from application.resilience_service import ResilienceService
+from application.write_ledger import WriteLedger
+from domain.mission_dtos import GeneratorSettingsDTO
 
 logging.basicConfig(level=logging.INFO)
+# Клієнт Elasticsearch логує кожен bulk-запит — під навантаженням це тисячі рядків логу за хвилину
+logging.getLogger("elastic_transport.transport").setLevel(logging.WARNING)
 log = logging.getLogger("app")
 
 SEARCH_CACHE_TTL = int(os.getenv("SEARCH_CACHE_TTL", "300"))
@@ -51,11 +66,13 @@ async def _retry(name: str, fn: Callable, attempts: int = 30, delay: float = 2.0
 
 def create_app(run_generator: bool = True, database_url: Optional[str] = None,
                es_url: Optional[str] = None, redis_url: Optional[str] = None,
-               citus_workers: Optional[str] = None) -> FastAPI:
+               citus_workers: Optional[str] = None, benchmark_file: Optional[str] = None) -> FastAPI:
     database_url = database_url or os.getenv("DATABASE_URL")
     es_url = es_url or os.getenv("ES_URL")
     redis_url = redis_url or os.getenv("REDIS_URL")
     citus_workers = citus_workers or os.getenv("CITUS_WORKERS")
+    single_node = os.getenv("CITUS_SINGLE_NODE", "") in ("1", "true", "yes")
+    benchmark_file = benchmark_file if benchmark_file is not None else os.getenv("BENCHMARK_FILE", "")
 
     startup: List[Callable] = []
     shutdown: List[Callable] = []
@@ -69,11 +86,13 @@ def create_app(run_generator: bool = True, database_url: Optional[str] = None,
     else:
         repo = InMemoryMissionRepository()
 
-    if database_url and citus_workers:
+    topology = "у пам'яті (імітація 3 вузлів)"
+    if database_url and (citus_workers or single_node):
         from adapters.outbound.citus_cluster import PgConn, parse_workers, setup_citus
         from adapters.outbound.citus_sharding_adapter import CitusShardAdapter
         coord = PgConn.from_sqlalchemy_url(database_url)
-        workers = parse_workers(citus_workers)
+        workers = [] if single_node else parse_workers(citus_workers or "")
+        topology = "1 вузол" if not workers else f"{len(workers)} воркери"
         coord_host = os.getenv("CITUS_COORDINATOR_HOST", coord.host)
         startup.append(lambda: _retry("Citus", lambda: setup_citus(coord, coord_host, workers)))
         shards = CitusShardAdapter(coord)
@@ -83,6 +102,9 @@ def create_app(run_generator: bool = True, database_url: Optional[str] = None,
         shards = InMemoryShardCluster(repo)
     else:
         shards = None  # PostgreSQL без Citus: сторінка шардінгу недоступна
+        topology = "PostgreSQL без Citus"
+    topology = os.getenv("TOPOLOGY_NAME") or topology
+    health = shards if isinstance(shards, ClusterHealthPort) else None
 
     # ---- Пошук ----
     if es_url:
@@ -109,8 +131,16 @@ def create_app(run_generator: bool = True, database_url: Optional[str] = None,
         search_cache = InMemorySearchCache()
         recent = InMemoryRecentQueries()
 
-    commands = MissionCommandService(repo, search)
-    generator = FakeGeneratorAdapter(commands)
+    ledger = WriteLedger()
+    commands = MissionCommandService(repo, search, ledger)
+    generator = FakeGeneratorAdapter(
+        commands, GeneratorSettingsDTO(docs_per_second=int(os.getenv("GENERATOR_RATE", "100"))),
+        buffer_limit=int(os.getenv("GENERATOR_BUFFER", "100000")))
+    recorder = MetricsRecorder(repo, generator, ledger)
+    resilience = ResilienceService(repo, ledger, generator, health, shards)
+    generator.on_event = resilience.log_event
+    benchmarks = BenchmarkService(generator, recorder, ledger, make_store(benchmark_file), health, topology)
+    admin = DataAdminService(repo, search, search_cache, rec_cache, ledger, generator)
 
     async def reindex_if_needed() -> None:
         """Новий індекс (missions-v2) порожній, а SQL — ні: переносимо дані в Elasticsearch."""
@@ -129,10 +159,23 @@ def create_app(run_generator: bool = True, database_url: Optional[str] = None,
             await commands.create_missions(seed_requests())
         else:
             await reindex_if_needed()
-        task = asyncio.create_task(generator.run()) if run_generator else None
+        async def initial_count() -> None:
+            # Точна кількість рядків — база для лічильника (application/write_ledger.py). На великій
+            # таблиці count(*) триває хвилини, тож рахуємо у фоні: застосунок і генератор уже працюють,
+            # а шапка показує «рахується…», доки не з'явиться точне число
+            try:
+                await recorder.recount()
+            except Exception as e:  # noqa: BLE001
+                log.warning("Початковий count(*) не вдався (%s) — натисніть «Перерахувати»", e)
+
+        tasks = [asyncio.create_task(recorder.run()), asyncio.create_task(resilience.run()),
+                 asyncio.create_task(initial_count())]
+        if run_generator:
+            tasks.append(asyncio.create_task(generator.run()))
         yield
-        if task:
-            task.cancel()
+        for t in tasks:
+            t.cancel()
+        await benchmarks.stop()
         for step in shutdown:
             await step()
 
@@ -144,7 +187,14 @@ def create_app(run_generator: bool = True, database_url: Optional[str] = None,
         app.include_router(ShardingRestController(ShardingService(shards), MapReduceService(shards)).router)
     app.include_router(MissionQueryRestController(MissionQueryService(repo)).router)
     app.include_router(MissionRestController(commands).router)
-    app.include_router(GeneratorControlRestController(generator).router)
+    app.include_router(GeneratorControlRestController(generator, locked=benchmarks.is_running).router)
+    app.include_router(MetricsRestController(recorder).router)
+    app.include_router(BenchmarkRestController(benchmarks).router)
+    app.include_router(DataAdminRestController(admin).router)
+    app.include_router(ResilienceRestController(resilience).router)
+    app.state.generator, app.state.recorder, app.state.ledger = generator, recorder, ledger
+    app.state.resilience, app.state.benchmarks, app.state.shards = resilience, benchmarks, shards
+    app.state.topology = topology
     # Статика останньою, щоб не перекривала /api
     app.mount("/", StaticFiles(directory=Path(__file__).parent / "static", html=True), name="static")
     return app

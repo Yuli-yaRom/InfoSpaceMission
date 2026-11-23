@@ -16,6 +16,19 @@ def make_client(url: str) -> Redis:
     return Redis.from_url(url, decode_responses=True)
 
 
+async def _delete_pattern(client: Any, pattern: str) -> int:
+    """SCAN замість KEYS: не блокує Redis на великій кількості ключів."""
+    n, chunk = 0, []
+    async for key in client.scan_iter(match=pattern, count=1000):
+        chunk.append(key)
+        if len(chunk) >= 500:
+            n += await client.delete(*chunk)
+            chunk = []
+    if chunk:
+        n += await client.delete(*chunk)
+    return n
+
+
 class RedisRecommendationCacheAdapter(RecommendationCachePort):
     def __init__(self, url: str = "redis://localhost:6379/0", ttl_seconds: int = 300,
                  client: Any = None):
@@ -36,6 +49,9 @@ class RedisRecommendationCacheAdapter(RecommendationCachePort):
         payload = json.dumps([i.model_dump() for i in items], ensure_ascii=False)
         await self._redis.set(self._key(mission_id), payload, ex=self._ttl)
 
+    async def clear(self) -> int:
+        return await _delete_pattern(self._redis, "recs:*")
+
     async def close(self) -> None:
         await self._redis.aclose()
 
@@ -52,6 +68,9 @@ class RedisSearchCacheAdapter(SearchCachePort):
 
     async def put(self, key: str, page: SearchPageDTO, ttl_seconds: int) -> None:
         await self._redis.set(key, page.model_dump_json(), ex=ttl_seconds)
+
+    async def clear(self) -> int:
+        return await _delete_pattern(self._redis, "search:*")
 
 
 class RedisRecentQueriesAdapter(RecentQueriesPort):

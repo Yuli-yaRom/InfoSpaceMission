@@ -1,6 +1,7 @@
 # Топологія БД (п. 13): застосунок -> координатор Citus -> 3 воркери-шарди.
 # Застосунок підключається ТІЛЬКИ до координатора (аналог mongos); воркери не публікуються назовні.
 # Map-reduce (п. 14) навмисно підключається до воркерів напряму всередині мережі compose.
+# Порівняння з одним вузлом — docker-compose.single.yml; відмова шарда — scripts/outage_demo.sh.
 
 x-citus-worker: &citus-worker
   image: citusdata/citus:12.1
@@ -92,10 +93,17 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://space:space@citus-coordinator:5432/space
       CITUS_COORDINATOR_HOST: citus-coordinator
-      CITUS_WORKERS: citus-worker-1:5432,citus-worker-2:5432,citus-worker-3:5432
+      # REMOTE_WORKERS — воркери на інших комп'ютерах (бонус), напр. REMOTE_WORKERS=,192.168.1.50:5433
+      # (див. docs/multi_host.md); без змінної — лише 3 локальні воркери
+      CITUS_WORKERS: citus-worker-1:5432,citus-worker-2:5432,citus-worker-3:5432${REMOTE_WORKERS:-}
       ES_URL: http://elasticsearch:9200
       REDIS_URL: redis://redis:6379/0
       SEARCH_CACHE_TTL: "300"
+      # Навантажувальне тестування (docs/load_testing.md)
+      TOPOLOGY_NAME: "3 воркери"
+      BENCHMARK_FILE: /app/logs/benchmarks.jsonl   # спільний із docker-compose.single.yml
+      GENERATOR_RATE: "100"
+      GENERATOR_BUFFER: "100000"
     ports:
       - "8000:8000"
     volumes:
